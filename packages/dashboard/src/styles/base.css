@@ -1,0 +1,61 @@
+@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500&display=swap');
+@import "tailwindcss";
+
+@font-face {
+  font-family: 'Trench Slab';
+  src: url('/font/TrenchSlab_Complete/Fonts/WEB/fonts/TrenchSlab-Variable.woff2') format('woff2'),
+       url('/font/TrenchSlab_Complete/Fonts/WEB/fonts/TrenchSlab-Variable.woff') format('woff');
+  font-weight: 300 700;
+  font-display: swap;
+  font-style: normal;
+}
+
+@theme {
+  /* Crextio-inspired warm cream theme */
+  --color-bg: #F5EFE6;
+  --color-bg-warm: #EDE7DC;
+  --color-card: #ffffff;
+  --color-sidebar: #ffffff;
+  --color-sidebar-hover: #F5EFE6;
+  --color-sidebar-active: #2D2D3F;
+  --color-hover: #F5EFE6;
+  --color-border: #E8E0D4;
+  --color-border-light: #EDE7DC;
+  --color-text: #1A1A2E;
+  --color-muted: #7C7C8D;
+  --color-light: #A0A0B0;
+  --color-accent: #EDBE44;
+  --color-accent-light: #FDF6E3;
+  --color-accent-hover: #D4A93A;
+  --color-accent-dark: #C49A30;
+  --color-success: #22c55e;
+  --color-success-light: #f0fdf4;
+  --color-warning: #eab308;
+  --color-warning-light: #fefce8;
+  --color-error: #ef4444;
+  --color-error-light: #fef2f2;
+  --color-info: #6366f1;
+  --color-info-light: #eef2ff;
+  --radius-sm: 10px;
+  --radius-md: 14px;
+  --radius-lg: 18px;
+  --radius-xl: 24px;
+  --shadow-sm: 0 1px 3px rgba(0,0,0,0.03);
+  --shadow-md: 0 4px 16px rgba(0,0,0,0.04);
+  --shadow-lg: 0 8px 30px rgba(0,0,0,0.06);
+  --shadow-card: 0 2px 8px rgba(0,0,0,0.03), 0 0 1px rgba(0,0,0,0.05);
+  --font-mono: 'JetBrains Mono', 'SF Mono', 'Fira Code', monospace;
+}
+
+body {
+  font-family: 'Trench Slab', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  background: var(--color-bg);
+  color: var(--color-text);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: #D4CFC6; border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: #B0ACA4; }

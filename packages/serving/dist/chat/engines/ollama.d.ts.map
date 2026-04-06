@@ -1,0 +1,1 @@
+{"version":3,"file":"ollama.d.ts","sourceRoot":"","sources":["../../../src/chat/engines/ollama.ts"],"names":[],"mappings":"AAAA,OAAO,KAAK,EAAE,WAAW,EAAE,SAAS,EAAE,MAAM,aAAa,CAAC;AAK1D,wBAAsB,YAAY,CAAC,KAAK,EAAE,WAAW,EAAE,MAAM,EAAE,SAAS,GAAG,OAAO,CAAC,IAAI,CAAC,CAsDvF"}

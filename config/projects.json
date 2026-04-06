@@ -1,0 +1,32 @@
+{
+  "$schema": "./projects.schema.json",
+  "version": "1.0.0",
+  "defaults": {
+    "scan": {
+      "maxFileSizeKb": 500,
+      "ignorePatterns": ["node_modules/**", ".git/**", "dist/**", "build/**", "vendor/**", "__pycache__/**"],
+      "supportedLanguages": ["typescript", "javascript", "python", "go", "c", "cpp"]
+    },
+    "extraction": {
+      "model": "claude-haiku-4-5-20251001",
+      "chunkBatchSize": 5,
+      "maxTokensPerChunk": 2000
+    }
+  },
+  "projects": [
+    {
+      "name": "Phone",
+      "description": "iPhone de test",
+      "repos": [
+        {
+          "name": "A",
+          "slug": "a",
+          "provider": "github",
+          "cloneUrl": "https://github.com/test",
+          "techStack": ["go", "nextjs", "typescript", "react", "fiber", "dbus", "mqtt", "tpm"],
+          "defaultBranch": "release",
+          "trackedBranches": ["release"]
+        }]
+    }
+  ]
+}

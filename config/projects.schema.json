@@ -1,0 +1,68 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Cortex Projects Configuration",
+  "type": "object",
+  "required": ["version", "projects"],
+  "properties": {
+    "version": {
+      "type": "string",
+      "pattern": "^\\d+\\.\\d+\\.\\d+$"
+    },
+    "defaults": {
+      "type": "object",
+      "properties": {
+        "scan": {
+          "type": "object",
+          "properties": {
+            "maxFileSizeKb": { "type": "number", "default": 500 },
+            "ignorePatterns": {
+              "type": "array",
+              "items": { "type": "string" },
+              "default": ["node_modules/**", ".git/**", "dist/**", "build/**", "vendor/**"]
+            },
+            "supportedLanguages": {
+              "type": "array",
+              "items": { "type": "string" },
+              "default": ["typescript", "javascript", "python", "go"]
+            }
+          }
+        },
+        "extraction": {
+          "type": "object",
+          "properties": {
+            "model": { "type": "string", "default": "claude-haiku-4-5-20251001" },
+            "chunkBatchSize": { "type": "number", "default": 5 },
+            "maxTokensPerChunk": { "type": "number", "default": 2000 }
+          }
+        }
+      }
+    },
+    "projects": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "repos"],
+        "properties": {
+          "name": { "type": "string" },
+          "description": { "type": "string" },
+          "repos": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["name", "slug"],
+              "properties": {
+                "name": { "type": "string" },
+                "slug": { "type": "string" },
+                "provider": { "type": "string", "enum": ["github", "bitbucket", "gitlab"] },
+                "cloneUrl": { "type": "string" },
+                "techStack": { "type": "array", "items": { "type": "string" } },
+                "defaultBranch": { "type": "string", "default": "main" },
+                "trackedBranches": { "type": "array", "items": { "type": "string" } }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

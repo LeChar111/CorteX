@@ -1,0 +1,35 @@
+{
+  "name": "cortex",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "pnpm -r run build",
+    "dev": "pnpm -r --parallel run dev",
+    "test": "pnpm -r run test",
+    "lint": "pnpm -r run lint",
+    "migrate": "pnpm --filter @cortex/db run migrate",
+    "seed": "tsx scripts/seed.ts",
+    "clean": "pnpm -r run clean"
+  },
+  "devDependencies": {
+    "tsx": "^4.21.0"
+  },
+  "engines": {
+    "node": ">=22.0.0",
+    "pnpm": ">=9.0.0"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "msgpackr-extract",
+      "tree-sitter",
+      "tree-sitter-go",
+      "tree-sitter-javascript",
+      "tree-sitter-python",
+      "tree-sitter-typescript"
+    ]
+  },
+  "dependencies": {
+    "dotenv": "^16.6.1"
+  }
+}

@@ -1,0 +1,91 @@
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: cortex
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-cortex_dev}
+      POSTGRES_DB: cortex
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./scripts/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U cortex -d cortex"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # Redis désactivé — utilise le Redis local sur :6379
+  # redis:
+  #   image: redis:7-alpine
+  #   ports:
+  #     - "6379:6379"
+  #   volumes:
+  #     - redisdata:/data
+  #   healthcheck:
+  #     test: ["CMD", "redis-cli", "ping"]
+  #     interval: 10s
+  #     timeout: 5s
+  #     retries: 5
+  #   restart: unless-stopped
+
+  ollama:
+    image: ollama/ollama
+    runtime: nvidia
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    environment:
+      OLLAMA_NUM_GPU: "99"
+      OLLAMA_GPU_OVERHEAD: "0"
+      NVIDIA_VISIBLE_DEVICES: all
+      OLLAMA_NUM_PARALLEL: "4"
+    # GPU NVIDIA
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+
+  lightrag:
+    build:
+      context: ./docker/lightrag
+      dockerfile: Dockerfile
+    ports:
+      - "9621:9621"
+    volumes:
+      - lightrag_data:/data/lightrag
+    environment:
+      LLM_MODEL: ${OLLAMA_LLM_MODEL:-qwen2.5:7b}
+      EMBEDDING_MODEL: ${OLLAMA_EMBEDDING_MODEL:-nomic-embed-text}
+      OLLAMA_HOST: http://ollama:11434
+      EMBEDDING_DIM: 768
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: cortex
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-cortex_dev}
+      POSTGRES_DB: cortex
+    depends_on:
+      postgres:
+        condition: service_healthy
+      ollama:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  redisdata:
+  ollama_data:
+  lightrag_data:

@@ -144,7 +144,13 @@ export async function scanRepo(options: ScanOptions): Promise<ScanResult> {
   try {
     // Phase 1: Run graphify bridge
     await updateScanJob(db, scanJobId, {
-      stats: { phase: 'graphify_extraction' } as unknown as Record<string, unknown>,
+      stats: {
+        phase: 'parsing',
+        filesProcessed: 0,
+        entitiesExtracted: 0,
+        documentsIngested: 0,
+        chunksProcessed: 0,
+      } as unknown as Record<string, unknown>,
     });
 
     const outputPath = join(tmpdir(), `cortex-graph-${randomUUID()}.json`);
@@ -157,8 +163,30 @@ export async function scanRepo(options: ScanOptions): Promise<ScanResult> {
       repoId,
       repoName,
       onProgress: async (progress) => {
+        // Map graphify phases to dashboard-expected phases
+        const gPhase = (progress as Record<string, unknown>).phase as string;
+        let dashPhase = 'parsing';
+        if (gPhase === 'enrichment' || gPhase === 'semantic_analysis' || gPhase === 'final_cluster') {
+          dashPhase = 'llm_extraction';
+        } else if (gPhase === 'export') {
+          dashPhase = 'ingestion';
+        }
+
+        const totalFiles = (progress as Record<string, unknown>).files as number ?? (progress as Record<string, unknown>).total as number ?? 0;
+        const nodesCount = (progress as Record<string, unknown>).nodes as number ?? result.nodesExtracted;
+        const edgesCount = (progress as Record<string, unknown>).edges as number ?? result.edgesExtracted;
+
         await updateScanJob(db, scanJobId, {
-          stats: { ...result, ...progress, phase: 'graphify_extraction' } as unknown as Record<string, unknown>,
+          stats: {
+            ...result,
+            ...progress,
+            phase: dashPhase,
+            total: totalFiles,
+            filesProcessed: totalFiles,
+            entitiesExtracted: nodesCount + edgesCount,
+            chunksProcessed: (progress as Record<string, unknown>).community as number ?? 0,
+            documentsIngested: 0,
+          } as unknown as Record<string, unknown>,
         }).catch(() => {});
       },
     }) as {
@@ -177,7 +205,15 @@ export async function scanRepo(options: ScanOptions): Promise<ScanResult> {
 
     // Phase 2: Import into PostgreSQL
     await updateScanJob(db, scanJobId, {
-      stats: { ...result, phase: 'pg_import' } as unknown as Record<string, unknown>,
+      stats: {
+        ...result,
+        phase: 'ingestion',
+        filesProcessed: result.filesProcessed,
+        entitiesExtracted: result.nodesExtracted + result.edgesExtracted,
+        chunksProcessed: result.communitiesDetected,
+        documentsIngested: 0,
+        total: result.nodesExtracted,
+      } as unknown as Record<string, unknown>,
     });
 
     const importResult = await importGraphJSON(outputPath, graphifyResult);
@@ -201,7 +237,15 @@ export async function scanRepo(options: ScanOptions): Promise<ScanResult> {
     await updateScanJob(db, scanJobId, {
       status: 'completed',
       completedAt: new Date(),
-      stats: result as unknown as Record<string, unknown>,
+      stats: {
+        ...result,
+        phase: 'completed',
+        filesProcessed: result.filesProcessed,
+        entitiesExtracted: result.nodesExtracted + result.edgesExtracted,
+        chunksProcessed: result.communitiesDetected,
+        documentsIngested: result.nodesImported,
+        total: result.filesProcessed,
+      } as unknown as Record<string, unknown>,
     });
 
     await insertEvent(db, {

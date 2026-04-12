@@ -186,12 +186,220 @@ def enrich_cross_file_edges(graph_path: str) -> dict:
                         existing_edges.add(edge_key)
                         stats["name_match_edges"] += 1
 
+    # Strategy 4: Connect entities in the same directory (co-location)
+    # Files in the same directory are likely related (same module/feature)
+    stats["co_location_edges"] = 0
+    dir_entities: dict[str, list[dict]] = {}
+    for node in nodes:
+        sf = node.get("source_file", "")
+        if not sf:
+            continue
+        # Use parent directory as grouping key
+        parts = sf.replace("\\", "/").rsplit("/", 1)
+        parent_dir = parts[0] if len(parts) > 1 else ""
+        if parent_dir:
+            dir_entities.setdefault(parent_dir, []).append(node)
+
+    for dir_path, entities in dir_entities.items():
+        # Only connect "main" entities (files, classes, exported functions)
+        main_entities = [e for e in entities
+                        if e.get("type") in ("file", "class", "module", "interface", "function", "method")
+                        or e.get("id", "").endswith((".ts", ".tsx", ".js", ".jsx", ".py"))]
+        if len(main_entities) < 2:
+            continue
+        # Connect file-level nodes in same directory
+        file_nodes = [e for e in main_entities if e.get("type") == "file" or "." in e.get("label", "")]
+        non_file_nodes = [e for e in main_entities if e not in file_nodes]
+        targets = file_nodes if file_nodes else non_file_nodes
+        if len(targets) < 2:
+            continue
+        # Connect each pair of file nodes (they co-exist in the same module)
+        for i, e_a in enumerate(targets):
+            for e_b in targets[i+1:]:
+                edge_key = (e_a["id"], e_b["id"])
+                if edge_key not in existing_edges:
+                    new_edges.append({
+                        "source": e_a["id"],
+                        "target": e_b["id"],
+                        "relation": "co_located",
+                        "confidence": "INFERRED",
+                        "confidence_score": 0.4,
+                        "weight": 0.3,
+                        "source_file": dir_path,
+                    })
+                    existing_edges.add(edge_key)
+                    stats["co_location_edges"] += 1
+                    # Cap co-location edges per directory to avoid explosion
+                if stats["co_location_edges"] > 5000:
+                    break
+            if stats["co_location_edges"] > 5000:
+                break
+        if stats["co_location_edges"] > 5000:
+            break
+
+    # Strategy 5: Ensure every node has at least one edge
+    # Find isolated nodes and connect them to the nearest node in the same file
+    stats["isolation_fix_edges"] = 0
+    connected_nodes = set()
+    for link in links:
+        connected_nodes.add(link["source"])
+        connected_nodes.add(link["target"])
+    for e in new_edges:
+        connected_nodes.add(e["source"])
+        connected_nodes.add(e["target"])
+
+    isolated_nodes = [n for n in nodes if n["id"] not in connected_nodes]
+    for iso_node in isolated_nodes:
+        sf = iso_node.get("source_file", "")
+        if not sf:
+            continue
+        # Find another node in the same file that IS connected
+        same_file = [n for n in file_entities.get(sf, []) if n["id"] != iso_node["id"] and n["id"] in connected_nodes]
+        if not same_file:
+            # Fallback: any node in same file
+            same_file = [n for n in file_entities.get(sf, []) if n["id"] != iso_node["id"]]
+        if same_file:
+            target = same_file[0]
+            edge_key = (iso_node["id"], target["id"])
+            if edge_key not in existing_edges:
+                new_edges.append({
+                    "source": iso_node["id"],
+                    "target": target["id"],
+                    "relation": "defined_in_same_file",
+                    "confidence": "EXTRACTED",
+                    "confidence_score": 1.0,
+                    "weight": 0.5,
+                    "source_file": sf,
+                })
+                existing_edges.add(edge_key)
+                connected_nodes.add(iso_node["id"])
+                stats["isolation_fix_edges"] += 1
+
+    # Strategy 6: Cross-layer API matching (frontend API clients <-> backend routes)
+    # Match files like "products.api.ts" (frontend) with "product.controller.ts" (backend)
+    # and connect them via 'api_call' edges
+    stats["api_bridge_edges"] = 0
+
+    frontend_api_nodes = []
+    backend_ctrl_nodes = []
+    backend_service_nodes = []
+
+    for node in nodes:
+        sf = node.get("source_file", "")
+        label = node.get("label", "")
+        node_id = node.get("id", "")
+        if not sf:
+            continue
+
+        # Frontend API clients: *.api.ts files or FrontBaseApi references
+        if ("frontend" in sf or "lib/api" in sf) and (".api." in label or ".api." in sf):
+            frontend_api_nodes.append(node)
+
+        # Backend controllers
+        if "backend" in sf and ("controller" in sf.lower() or "controller" in label.lower()):
+            backend_ctrl_nodes.append(node)
+
+        # Backend services
+        if "backend" in sf and ("service" in sf.lower() or "Service" in label):
+            backend_service_nodes.append(node)
+
+    # Extract domain name from filename only (not path segments — too noisy)
+    def extract_domain(label: str) -> str | None:
+        """Extract the primary domain keyword from a filename label."""
+        # Strip extensions and suffixes: products.api.ts -> products
+        clean = label.lower()
+        for suffix in (".tsx", ".ts", ".js", ".jsx", ".py",
+                       ".api", ".controller", ".service", ".model",
+                       ".routes", ".route", ".middleware", ".utils", ".types"):
+            clean = clean.replace(suffix, "")
+        # Remove common prefixes/suffixes
+        for word in ("controller", "service", "view", "modal", "form",
+                     "create", "update", "delete", "get", "list", "detail"):
+            clean = clean.replace(word, "")
+        # Clean up separators and take the main word
+        parts = [p for p in clean.replace("-", " ").replace("_", " ").replace(".", " ").split() if len(p) > 3]
+        return parts[0] if parts else None
+
+    # Match frontend API nodes to backend controllers/services by domain
+    # Require the SAME domain keyword (e.g. "product" in both)
+    backend_targets = backend_ctrl_nodes + backend_service_nodes
+    for fe_node in frontend_api_nodes:
+        fe_domain = extract_domain(fe_node.get("label", ""))
+        if not fe_domain:
+            continue
+
+        for be_node in backend_targets:
+            be_domain = extract_domain(be_node.get("label", ""))
+            if not be_domain:
+                continue
+            # Require exact match or substring containment of the domain
+            if fe_domain == be_domain or (len(fe_domain) > 4 and fe_domain in be_domain) or (len(be_domain) > 4 and be_domain in fe_domain):
+                edge_key = (fe_node["id"], be_node["id"])
+                if edge_key not in existing_edges:
+                    new_edges.append({
+                        "source": fe_node["id"],
+                        "target": be_node["id"],
+                        "relation": "api_call",
+                        "confidence": "INFERRED",
+                        "confidence_score": 0.7,
+                        "weight": 0.8,
+                        "source_file": fe_node.get("source_file", ""),
+                    })
+                    existing_edges.add(edge_key)
+                    stats["api_bridge_edges"] += 1
+
+    # Strategy 7: Connect shared package types to backend/frontend consumers
+    # Match files in packages/shared with consumers that have the SAME label
+    stats["shared_bridge_edges"] = 0
+    shared_nodes = [n for n in nodes if "packages/" in n.get("source_file", "") or "shared" in n.get("source_file", "")]
+
+    # Build index of non-shared nodes by label for O(1) lookup
+    label_index: dict[str, list[dict]] = {}
+    for node in nodes:
+        sf = node.get("source_file", "")
+        if not sf or "packages/" in sf:
+            continue
+        label = node.get("label", "").lower().replace(".ts", "").replace(".tsx", "")
+        if len(label) > 4:
+            label_index.setdefault(label, []).append(node)
+
+    for shared_node in shared_nodes:
+        shared_label = shared_node.get("label", "").lower()
+        shared_clean = shared_label.replace(".ts", "").replace(".tsx", "").replace(".types", "").replace(".d", "")
+        if len(shared_clean) < 5:
+            continue
+
+        # Only exact label match
+        matches = label_index.get(shared_clean, [])
+        for match_node in matches:
+            edge_key = (shared_node["id"], match_node["id"])
+            if edge_key not in existing_edges:
+                new_edges.append({
+                    "source": shared_node["id"],
+                    "target": match_node["id"],
+                    "relation": "type_dependency",
+                    "confidence": "INFERRED",
+                    "confidence_score": 0.6,
+                    "weight": 0.6,
+                    "source_file": "",
+                })
+                existing_edges.add(edge_key)
+                stats["shared_bridge_edges"] += 1
+
     if new_edges:
         data["links"].extend(new_edges)
         with open(graph_path, "w") as f:
             json.dump(data, f)
 
-        total = stats["cross_file_uses"] + stats["name_match_edges"]
-        print(f"[enrichment] Added {total} cross-file edges ({stats['cross_file_uses']} uses, {stats['name_match_edges']} name matches)", file=sys.stderr)
+        total = (stats["cross_file_uses"] + stats["name_match_edges"]
+                 + stats.get("co_location_edges", 0) + stats.get("isolation_fix_edges", 0)
+                 + stats.get("api_bridge_edges", 0) + stats.get("shared_bridge_edges", 0))
+        print(
+            f"[enrichment] Added {total} edges "
+            f"({stats['cross_file_uses']} uses, {stats['name_match_edges']} name, "
+            f"{stats.get('co_location_edges', 0)} co-loc, {stats.get('isolation_fix_edges', 0)} iso-fix, "
+            f"{stats.get('api_bridge_edges', 0)} api-bridge, {stats.get('shared_bridge_edges', 0)} shared-bridge)",
+            file=sys.stderr,
+        )
 
     return stats

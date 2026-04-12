@@ -60,16 +60,48 @@ graphRoutes.get('/graph/summary', async (c) => {
             }
             const topIds = topNodes.map((r) => r.id);
             const visibleIds = new Set(topIds);
-            // Only fetch edges BETWEEN the top nodes (not to external neighbors)
             const topIdsArr = sql.raw(`ARRAY[${topIds.map(id => `'${String(id).replace(/'/g, "''")}'`).join(',')}]::varchar[]`);
+            // Fetch ALL edges where at least ONE end is a top hub
             const edgeQuery = sql `
         SELECT source_node_id, target_node_id, relation, confidence, confidence_score, weight, source_file
         FROM graph_edges
-        WHERE source_node_id = ANY(${topIdsArr}) AND target_node_id = ANY(${topIdsArr})
+        WHERE source_node_id = ANY(${topIdsArr}) OR target_node_id = ANY(${topIdsArr})
       `;
             const edgesResult = await db.execute(edgeQuery);
-            const edges = (edgesResult.rows ?? edgesResult ?? []);
-            const filteredEdges = edges
+            const allEdges = (edgesResult.rows ?? edgesResult ?? []);
+            // Find bridge nodes: nodes NOT in topIds but connected to 2+ top hubs
+            const bridgeCandidates = {};
+            for (const e of allEdges) {
+                const src = e.source_node_id;
+                const tgt = e.target_node_id;
+                if (visibleIds.has(src) && !visibleIds.has(tgt)) {
+                    bridgeCandidates[tgt] = (bridgeCandidates[tgt] ?? 0) + 1;
+                }
+                if (visibleIds.has(tgt) && !visibleIds.has(src)) {
+                    bridgeCandidates[src] = (bridgeCandidates[src] ?? 0) + 1;
+                }
+            }
+            // Add bridge nodes that connect 2+ hubs (they densify the graph)
+            const bridgeIds = Object.entries(bridgeCandidates)
+                .filter(([, count]) => count >= 2)
+                .map(([id]) => id);
+            let bridgeNodes = [];
+            if (bridgeIds.length > 0) {
+                const bridgeIdsArr = sql.raw(`ARRAY[${bridgeIds.map(id => `'${String(id).replace(/'/g, "''")}'`).join(',')}]::varchar[]`);
+                const bridgeQuery = sql `
+          SELECT n.id, n.label, n.type, n.source_file, n.source_location,
+                 n.project_id, n.community_id, n.properties,
+                 (SELECT COUNT(*) FROM graph_edges e WHERE e.source_node_id = n.id OR e.target_node_id = n.id) as degree
+          FROM graph_nodes n
+          WHERE n.id = ANY(${bridgeIdsArr})
+        `;
+                const bridgeResult = await db.execute(bridgeQuery);
+                bridgeNodes = (bridgeResult.rows ?? bridgeResult ?? []);
+                for (const bn of bridgeNodes)
+                    visibleIds.add(bn.id);
+            }
+            // Filter edges to only those where BOTH ends are visible (top hubs + bridges)
+            const filteredEdges = allEdges
                 .filter((e) => visibleIds.has(e.source_node_id) && visibleIds.has(e.target_node_id))
                 .map((e) => ({
                 source: e.source_node_id,
@@ -80,12 +112,110 @@ graphRoutes.get('/graph/summary', async (c) => {
                 weight: e.weight,
                 source_file: e.source_file,
             }));
+            // Find isolated nodes (visible but no edges) and pull in their best neighbor
+            const edgeConnected = new Set();
+            for (const e of filteredEdges) {
+                edgeConnected.add(e.source);
+                edgeConnected.add(e.target);
+            }
+            const isolatedIds = [...visibleIds].filter(id => !edgeConnected.has(id));
+            let neighborNodes = [];
+            if (isolatedIds.length > 0) {
+                const isoArr = sql.raw(`ARRAY[${isolatedIds.map(id => `'${String(id).replace(/'/g, "''")}'`).join(',')}]::varchar[]`);
+                // For each isolated node, get its top neighbor (highest degree) from the full graph
+                const neighborQuery = sql `
+          WITH iso_edges AS (
+            SELECT e.source_node_id AS iso_id, e.target_node_id AS neighbor_id
+            FROM graph_edges e
+            WHERE e.source_node_id = ANY(${isoArr})
+            UNION ALL
+            SELECT e.target_node_id AS iso_id, e.source_node_id AS neighbor_id
+            FROM graph_edges e
+            WHERE e.target_node_id = ANY(${isoArr})
+          ),
+          ranked AS (
+            SELECT ie.iso_id, ie.neighbor_id,
+                   (SELECT COUNT(*) FROM graph_edges e2 WHERE e2.source_node_id = ie.neighbor_id OR e2.target_node_id = ie.neighbor_id) AS ndegree,
+                   ROW_NUMBER() OVER (PARTITION BY ie.iso_id ORDER BY (SELECT COUNT(*) FROM graph_edges e2 WHERE e2.source_node_id = ie.neighbor_id OR e2.target_node_id = ie.neighbor_id) DESC) AS rn
+            FROM iso_edges ie
+          )
+          SELECT r.iso_id, r.neighbor_id, n.label, n.type, n.source_file, n.source_location,
+                 n.project_id, n.community_id, n.properties, r.ndegree AS degree
+          FROM ranked r
+          JOIN graph_nodes n ON n.id = r.neighbor_id
+          WHERE r.rn = 1
+        `;
+                const neighborResult = await db.execute(neighborQuery);
+                const neighborRows = (neighborResult.rows ?? neighborResult ?? []);
+                for (const row of neighborRows) {
+                    const nid = row.neighbor_id;
+                    const isoId = row.iso_id;
+                    if (!visibleIds.has(nid)) {
+                        visibleIds.add(nid);
+                        // Remap neighbor row to standard node format
+                        neighborNodes.push({
+                            id: nid,
+                            label: row.label,
+                            type: row.type,
+                            source_file: row.source_file,
+                            source_location: row.source_location,
+                            project_id: row.project_id,
+                            community_id: row.community_id,
+                            properties: row.properties,
+                            degree: row.degree,
+                        });
+                    }
+                    // Add edge from isolated node to its best neighbor
+                    filteredEdges.push({
+                        source: isoId,
+                        target: nid,
+                        relation: 'connected_to',
+                        confidence: 'EXTRACTED',
+                        confidence_score: null,
+                        weight: '1.0',
+                        source_file: null,
+                    });
+                    edgeConnected.add(isoId);
+                    edgeConnected.add(nid);
+                }
+            }
             const totalCountRow = projectId
                 ? await db.select({ c: sql `count(*)` }).from(graphNodes).where(eq(graphNodes.projectId, projectId))
                 : await db.select({ c: sql `count(*)` }).from(graphNodes);
             const totalNodes = Number(totalCountRow[0]?.c ?? 0);
+            const allNodes = [...topNodes, ...bridgeNodes, ...neighborNodes];
+            // Build community labels from the top-3 most connected nodes in each community
+            const communityIds = [...new Set(allNodes.map((n) => n.community_id).filter(Boolean))];
+            const communityLabels = {};
+            if (communityIds.length > 0) {
+                const commIdsSql = sql.raw(`ARRAY[${communityIds.map((id) => `'${String(id).replace(/'/g, "''")}'`).join(',')}]::varchar[]`);
+                const labelQuery = sql `
+          SELECT community_id, label, degree FROM (
+            SELECT n.community_id, n.label,
+                   (SELECT COUNT(*) FROM graph_edges e WHERE e.source_node_id = n.id OR e.target_node_id = n.id) as degree,
+                   ROW_NUMBER() OVER (PARTITION BY n.community_id ORDER BY (SELECT COUNT(*) FROM graph_edges e WHERE e.source_node_id = n.id OR e.target_node_id = n.id) DESC) as rn
+            FROM graph_nodes n
+            WHERE n.community_id = ANY(${commIdsSql})
+              ${projectId ? sql `AND n.project_id = ${projectId}` : sql ``}
+          ) ranked
+          WHERE rn <= 3
+          ORDER BY community_id, degree DESC
+        `;
+                const labelResult = await db.execute(labelQuery);
+                const labelRows = (labelResult.rows ?? labelResult ?? []);
+                const grouped = {};
+                for (const row of labelRows) {
+                    const cid = String(row.community_id);
+                    if (!grouped[cid])
+                        grouped[cid] = [];
+                    grouped[cid].push(String(row.label));
+                }
+                for (const [cid, labels] of Object.entries(grouped)) {
+                    communityLabels[cid] = labels.join(', ');
+                }
+            }
             return c.json({
-                nodes: topNodes.map((n) => ({
+                nodes: allNodes.map((n) => ({
                     id: n.id,
                     label: n.label,
                     type: n.type,
@@ -99,6 +229,7 @@ graphRoutes.get('/graph/summary', async (c) => {
                 edges: filteredEdges,
                 mode,
                 total: totalNodes,
+                communityLabels,
             });
         }
         if (mode === 'communities') {

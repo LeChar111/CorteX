@@ -1,6 +1,6 @@
 import { Worker, type Job } from 'bullmq';
 import { Redis as IORedis } from 'ioredis';
-import { getDb, getRepoById, getProjectById, updateScanJob, createScanJob } from '@cortex/db';
+import { getDb, getRepoById, getProjectById, updateScanJob, createScanJob, getScanJob } from '@cortex/db';
 import { cloneOrPullCached, buildAuthenticatedUrl } from '../src/source-loader.js';
 import { scanRepo } from '../src/pipeline.js';
 import { existsSync } from 'node:fs';
@@ -70,6 +70,8 @@ export function createScanWorker(redisUrl: string) {
         }
 
         // Run the full scan pipeline
+        // Note: scanRepo() handles its own status updates (completed/failed) + event insertion.
+        // Do NOT duplicate status updates here to avoid race conditions.
         const result = await scanRepo({
           projectId,
           projectName: project.name,
@@ -81,21 +83,19 @@ export function createScanWorker(redisUrl: string) {
           scanJobId,
         });
 
-        // Mark completed
-        await updateScanJob(db, scanJobId, {
-          status: 'completed',
-          completedAt: new Date(),
-          stats: result as unknown as Record<string, unknown>,
-        });
-
         return result;
       } catch (err) {
-        // Mark failed
-        await updateScanJob(db, scanJobId, {
-          status: 'failed',
-          completedAt: new Date(),
-          error: err instanceof Error ? err.message : String(err),
-        });
+        // scanRepo() already marks the job as failed, but if an error happened
+        // before scanRepo was called (e.g. project/repo not found, clone failed),
+        // we need to mark it here as a fallback.
+        const job = await getScanJob(db, scanJobId);
+        if (job && job.status === 'running') {
+          await updateScanJob(db, scanJobId, {
+            status: 'failed',
+            completedAt: new Date(),
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
         throw err;
       }
     },

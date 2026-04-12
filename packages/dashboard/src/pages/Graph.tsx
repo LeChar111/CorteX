@@ -71,6 +71,7 @@ export function Graph() {
   const [hiddenCommunities, setHiddenCommunities] = useState<Set<string>>(new Set());
   const [search, setSearch] = useState('');
   const [stabilizing, setStabilizing] = useState(false);
+  const [communityLabels, setCommunityLabels] = useState<Record<string, string>>({});
 
   const { data: projects } = useAsyncData(() => api.listProjects(), []);
 
@@ -98,6 +99,7 @@ export function Graph() {
         if (cancelled) return;
         setNodes((data.nodes ?? []) as RawNode[]);
         setEdges((data.edges ?? []) as RawEdge[]);
+        setCommunityLabels((data as any).communityLabels ?? {});
       } catch (err) {
         console.error('Failed to load graph:', err);
       } finally {
@@ -140,12 +142,14 @@ export function Graph() {
       .map(([cid, count]) => {
         const cidx = parseInt(cid, 10);
         const color = COMMUNITY_COLORS[(Number.isFinite(cidx) ? cidx : cid.charCodeAt(0)) % COMMUNITY_COLORS.length];
-        return { cid, color, label: cid === 'none' ? 'Unclustered' : `Community ${cid}`, count };
+        const descriptiveName = communityLabels[cid];
+        const label = cid === 'none' ? 'Unclustered' : (descriptiveName || `Community ${cid}`);
+        return { cid, color, label, count };
       })
       .sort((a, b) => b.count - a.count);
 
     return { nodeIndex, legend, degree };
-  }, [nodes, edges]);
+  }, [nodes, edges, communityLabels]);
 
   // Initialize vis.Network once.
   useEffect(() => {
@@ -155,29 +159,31 @@ export function Graph() {
     const options: Options = {
       physics: {
         enabled: true,
-        // barnesHut is quadtree-based and respects node mass/size, so big hubs
-        // repel each other much more strongly than forceAtlas2Based does.
         solver: 'barnesHut',
         barnesHut: {
-          gravitationalConstant: -8000,
-          centralGravity: 0.25,
-          springLength: 140,
-          springConstant: 0.04,
-          damping: 0.6,
-          avoidOverlap: 1.0,
+          gravitationalConstant: -2000,
+          centralGravity: 1.2,
+          springLength: 60,
+          springConstant: 0.1,
+          damping: 0.7,
+          avoidOverlap: 0.3,
         },
-        stabilization: { enabled: true, iterations: 300, fit: true },
+        stabilization: { enabled: true, iterations: 150, fit: true },
+        maxVelocity: 30,
+        minVelocity: 3,
+        timestep: 0.5,
       },
       interaction: {
         hover: true,
         tooltipDelay: 100,
         hideEdgesOnDrag: true,
+        hideEdgesOnZoom: true,
         navigationButtons: false,
         keyboard: false,
       },
       nodes: { shape: 'dot', borderWidth: 1.5 },
       edges: {
-        smooth: { enabled: true, type: 'continuous', roundness: 0.2 },
+        smooth: false,
         selectionWidth: 3,
       },
     };
@@ -193,6 +199,15 @@ export function Graph() {
       network.setOptions({ physics: { enabled: false } });
       setStabilizing(false);
     });
+
+    // Safety timeout: if stabilization hasn't finished in 8s, force stop
+    const stabilizationTimeout = setTimeout(() => {
+      if (networkRef.current) {
+        networkRef.current.stopSimulation();
+        networkRef.current.setOptions({ physics: { enabled: false } });
+        setStabilizing(false);
+      }
+    }, 8000);
 
     network.on('click', (params) => {
       if (params.nodes && params.nodes.length > 0) {
@@ -226,6 +241,7 @@ export function Graph() {
     });
 
     return () => {
+      clearTimeout(stabilizationTimeout);
       network.destroy();
       networkRef.current = null;
     };
@@ -416,7 +432,7 @@ export function Graph() {
             <div className="text-[13px] text-[#ccc] leading-relaxed">
               <div className="mb-1"><b className="text-[#e0e0e0]">{selectedInfo.node.label}</b></div>
               <div className="mb-1">Type: {selectedInfo.node.type ?? 'unknown'}</div>
-              <div className="mb-1">Community: {selectedInfo.cid === 'none' ? 'Unclustered' : selectedInfo.cid}</div>
+              <div className="mb-1">Community: {selectedInfo.cid === 'none' ? 'Unclustered' : (communityLabels[selectedInfo.cid!] || selectedInfo.cid)}</div>
               <div className="mb-1 truncate" title={selectedInfo.node.source_file}>
                 Source: {selectedInfo.node.source_file ?? '—'}
               </div>

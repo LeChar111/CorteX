@@ -115,6 +115,62 @@ const STANDARD_LINK_FIELDS = new Set([
   'source_file',
 ]);
 
+/**
+ * Infer node type from label, file extension, and relations.
+ * graphify's extract() doesn't emit a "type" field — it only outputs
+ * id, label, file_type, source_file, source_location. We infer the type
+ * from naming conventions.
+ */
+function inferNodeType(node: GraphifyNode): string {
+  // If graphify already set a type, use it
+  if (node.type && node.type !== 'unknown') return node.type;
+
+  const label = node.label || '';
+  const sf = node.source_file || '';
+
+  // File-level node (label ends with file extension)
+  if (/\.(ts|tsx|js|jsx|py|java|go|rb|rs|c|cpp|cs|kt|scala|php|swift|lua)$/i.test(label)) {
+    return 'file';
+  }
+
+  // Function/method (label ends with "()")
+  if (label.endsWith('()')) {
+    // Heuristic: if label starts with uppercase, it's likely a constructor
+    const name = label.slice(0, -2);
+    if (/^[A-Z]/.test(name) && !name.includes('.')) return 'class';
+    return 'function';
+  }
+
+  // Class/Interface (PascalCase, no parens, not a file)
+  if (/^[A-Z][a-zA-Z0-9]+$/.test(label) && !label.includes('.')) {
+    return 'class';
+  }
+
+  // Interface naming patterns
+  if (/^I[A-Z]/.test(label) || label.endsWith('Interface') || label.endsWith('Type')) {
+    return 'interface';
+  }
+
+  // Hook (React hook pattern)
+  if (/^use[A-Z]/.test(label)) {
+    return 'function';
+  }
+
+  // Module-level identifier (camelCase)
+  if (/^[a-z][a-zA-Z0-9]+$/.test(label)) {
+    return 'variable';
+  }
+
+  // Fallback from source file extension
+  if (sf) {
+    if (/\.(test|spec)\.(ts|tsx|js|jsx)$/i.test(sf)) return 'test';
+    if (/\.(md|mdx|txt|rst)$/i.test(sf)) return 'document';
+    if (/\.(json|yaml|yml|toml|ini|env)$/i.test(sf)) return 'config';
+  }
+
+  return 'unknown';
+}
+
 /** Extract non-standard fields from a node as properties jsonb */
 function extractProperties(node: GraphifyNode): Record<string, unknown> | undefined {
   const props: Record<string, unknown> = {};
@@ -163,7 +219,7 @@ export async function importGraphJSON(
     return {
       id: node.id,
       label: node.label,
-      type: node.type || 'unknown',
+      type: inferNodeType(node),
       fileType: node.file_type ?? null,
       sourceFile: node.source_file ?? null,
       sourceLocation: node.source_location ?? null,

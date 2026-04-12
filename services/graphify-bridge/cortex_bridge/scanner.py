@@ -79,6 +79,13 @@ def scan_directory(
     else:
         extraction = extract(code_files)
 
+    # Report extraction progress
+    progress["phase"] = "extract"
+    progress["nodes"] = len(extraction.get("nodes", []))
+    progress["edges"] = len(extraction.get("edges", []))
+    progress["files"] = total_files
+    print(json.dumps({"progress": progress}), file=sys.stderr, flush=True)
+
     # 3. Build graph
     G = build_from_json(extraction, directed=True)
 
@@ -88,6 +95,12 @@ def scan_directory(
         G.nodes[node_id]["project_name"] = project_name
         G.nodes[node_id]["repo_id"] = repo_id
         G.nodes[node_id]["repo_name"] = repo_name
+
+    # Report graph build progress
+    progress["phase"] = "build"
+    progress["nodes"] = G.number_of_nodes()
+    progress["edges"] = G.number_of_edges()
+    print(json.dumps({"progress": progress}), file=sys.stderr, flush=True)
 
     # 5. Initial export (before enrichment)
     output = Path(output_path)
@@ -142,6 +155,9 @@ def scan_directory(
 
     # 9. Final export with communities
     progress["phase"] = "export"
+    progress["nodes"] = G_final.number_of_nodes()
+    progress["edges"] = G_final.number_of_edges()
+    progress["community"] = str(len(communities))
     print(json.dumps({"progress": progress}), file=sys.stderr, flush=True)
     to_json(G_final, communities, str(output))
 

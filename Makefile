@@ -128,11 +128,21 @@ cortex-status: ## Show status of background dev servers + Docker services
 #  ENVIRONMENT
 # ─────────────────────────────────────────────────────────────────────────────
 
-check-env: ## Ensure .env exists (copies .env.example if missing)
+check-env: ## Ensure .env exists (copies .env.example if missing) and .cred.env exists
 	@if [ ! -f .env ]; then \
-		printf "$(Y)⚠$(NC)  .env not found — copying .env.example\n"; \
-		cp .env.example .env; \
-		printf "$(G)✔$(NC)  .env created\n"; \
+		if [ -f .env.example ]; then \
+			printf "$(Y)⚠$(NC)  .env not found — copying .env.example\n"; \
+			cp .env.example .env; \
+			printf "$(G)✔$(NC)  .env created\n"; \
+		else \
+			printf "$(Y)✘$(NC)  .env not found and .env.example is missing.\n"; \
+			printf "    Create .env manually (see README) then rerun.\n"; \
+			exit 1; \
+		fi; \
+	fi
+	@if [ ! -f .cred.env ]; then \
+		printf "$(C)ℹ$(NC)  Creating empty .cred.env (add tokens to enable authenticated git clones)\n"; \
+		printf "# Cortex credentials — managed by the dashboard\n# Add provider tokens here or use the dashboard Settings > Credentials page.\n#\n# GITHUB_TOKEN=ghp_xxx\n# GITLAB_TOKEN=glpat-xxx\n# BITBUCKET_USERNAME=user\n# BITBUCKET_APP_PASSWORD=xxx\n" > .cred.env; \
 	fi
 
 # Critical packages whose absence/corruption makes the stack fail to boot.

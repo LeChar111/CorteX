@@ -441,7 +441,7 @@ function RepoCredentialsSection({
                 type="button"
                 onClick={() => handleSelectExisting(cred.id)}
                 className={cn(
-                  'w-full flex items-center gap-3 px-3 py-2.5 rounded-[var(--radius-md)] border text-left transition-colors',
+                  'w-full flex items-center gap-3 px-3 py-2.5 rounded-[var(--radius-md)] border-2 shadow-xl cursor-pointer text-left transition-colors',
                   isSelected
                     ? 'border-success/40 bg-success/5'
                     : 'border-[var(--color-border-light)] hover:border-accent/30 hover:bg-[var(--color-hover)]',
@@ -606,7 +606,7 @@ function RepoCredentialsSection({
           onClick={handleTestConnection}
           disabled={testStatus === 'testing' || !cloneUrl.trim()}
           className={cn(
-            'inline-flex items-center gap-1.5 px-3 py-1.5 rounded-[var(--radius-md)] text-xs font-medium transition-colors',
+            'inline-flex items-center gap-1.5 px-3 py-1.5 rounded-[var(--radius-md)] text-xs shadow-xl cursor-pointer !border-2 border-black/50 font-medium transition-colors',
             testStatus === 'ok'
               ? 'bg-success/10 text-success border border-success/20'
               : testStatus === 'error'

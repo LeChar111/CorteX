@@ -113,7 +113,9 @@ services:
     user: "${UID:-1000}:${GID:-1000}"
     volumes:
       - ${HOME}/.ssh:/home/cortex/.ssh:ro
+      - ./.cred.env:/app/.cred.env:ro
     environment:
+      CORTEX_ROOT: /app
       REDIS_URL: redis://redis:6379
       DATABASE_URL: postgresql://cortex:${POSTGRES_PASSWORD:-cortex_dev}@postgres:5432/cortex
       RUST_LOG: ${RUST_LOG:-info}

@@ -46,7 +46,6 @@ const navEntries: NavEntry[] = [
     ],
   },
   { label: 'Infra', to: '/infrastructure' },
-  { label: 'Terminal', to: '/terminal' },
 ];
 
 function NavDropdown({ group, isActive }: { group: NavGroup; isActive: (to: string) => boolean }) {

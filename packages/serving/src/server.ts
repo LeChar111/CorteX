@@ -6,6 +6,7 @@ import { serve } from '@hono/node-server';
 import { runMigrations } from '@cortex/db';
 import { createApp } from './api/app.js';
 import { WebSocketHub } from './ws/hub.js';
+import { closeRedis } from './redis.js';
 import { PgListener } from './ws/pg-listener.js';
 
 const port = Number(process.env['PORT']) || 3100;
@@ -54,11 +55,13 @@ process.on('unhandledRejection', (err) => {
 process.on('SIGTERM', async () => {
   console.log('SIGTERM received, shutting down...');
   await pgListener.stop();
+  await closeRedis();
   process.exit(0);
 });
 
 process.on('SIGINT', async () => {
   console.log('SIGINT received, shutting down...');
   await pgListener.stop();
+  await closeRedis();
   process.exit(0);
 });

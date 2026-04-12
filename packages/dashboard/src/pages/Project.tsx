@@ -16,6 +16,7 @@ import {
   X,
   Check,
   ChevronDown,
+  Plug,
 } from 'lucide-react';
 import { api } from '../api.ts';
 import { cn } from '../lib/utils.ts';
@@ -340,6 +341,8 @@ export function Project() {
   const [scanning, setScanning] = useState<Record<string, { jobId: string; status: string }>>({});
   const [scanningAll, setScanningAll] = useState(false);
   const [showAddRepo, setShowAddRepo] = useState(false);
+  const [connCheck, setConnCheck] = useState<'idle' | 'checking' | 'ok' | 'error'>('idle');
+  const [connError, setConnError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!id) return;
@@ -420,6 +423,21 @@ export function Project() {
     }
   };
 
+  const handleCheckConnection = async () => {
+    if (repos.length === 0) return;
+    setConnCheck('checking');
+    setConnError(null);
+    try {
+      await Promise.all(repos.map((r) => api.getBranches(r.id)));
+      setConnCheck('ok');
+      setTimeout(() => setConnCheck('idle'), 3000);
+    } catch (err) {
+      setConnCheck('error');
+      setConnError(err instanceof Error ? err.message : 'Connection failed');
+      setTimeout(() => setConnCheck('idle'), 5000);
+    }
+  };
+
   const handleScanAll = async () => {
     if (!id) return;
     setScanningAll(true);
@@ -481,6 +499,30 @@ export function Project() {
             </div>
           </div>
           <div className="flex items-center gap-2">
+            <button
+              onClick={handleCheckConnection}
+              disabled={connCheck === 'checking' || repos.length === 0}
+              title={connError ?? undefined}
+              className={cn(
+                'inline-flex items-center gap-2 px-4 py-2 rounded-[var(--radius-md)] text-sm font-medium border transition-colors',
+                connCheck === 'checking'
+                  ? 'border-[var(--color-border)] text-muted cursor-not-allowed'
+                  : connCheck === 'ok'
+                    ? 'border-success/30 bg-success/10 text-success'
+                    : connCheck === 'error'
+                      ? 'border-error/30 bg-error/10 text-error'
+                      : 'border-[var(--color-border)] text-text hover:bg-[var(--color-hover)]',
+              )}
+            >
+              {connCheck === 'checking' ? (
+                <Loader2 className="w-4 h-4 animate-spin" />
+              ) : connCheck === 'ok' ? (
+                <Check className="w-4 h-4" />
+              ) : (
+                <Plug className="w-4 h-4" />
+              )}
+              {connCheck === 'checking' ? 'Checking...' : connCheck === 'ok' ? 'Connected' : connCheck === 'error' ? 'Failed' : 'Check Connection'}
+            </button>
             <button
               onClick={() => setShowAddRepo(true)}
               className="inline-flex items-center gap-2 px-4 py-2 rounded-[var(--radius-md)] text-sm font-medium border border-[var(--color-border)] text-text hover:bg-[var(--color-hover)] transition-colors"

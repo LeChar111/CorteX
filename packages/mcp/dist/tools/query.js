@@ -19,6 +19,10 @@ export const queryTool = {
         const project = args.project || detected?.projectName;
         const mode = args.mode || 'mix';
         const result = await client.query(query, { project, mode });
+        // The API returns a 'response' field with the text answer
+        if (result.response && typeof result.response === 'string') {
+            return result.response;
+        }
         return JSON.stringify(result, null, 2);
     },
 };

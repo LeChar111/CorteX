@@ -20,6 +20,13 @@ import { listProjectsTool } from './tools/list-projects.js';
 import { impactTool } from './tools/impact.js';
 import { annotateTool } from './tools/annotate.js';
 import { exportKbTool } from './tools/export-kb.js';
+// Analysis tools
+import { diffReviewTool } from './tools/diff-review.js';
+import { crossProjectQueryTool } from './tools/cross-project-query.js';
+import { archCheckTool } from './tools/arch-check.js';
+import { communitiesTool } from './tools/communities.js';
+import { godNodesTool } from './tools/god-nodes.js';
+import { detectLinksTool } from './tools/detect-links.js';
 const allTools = [
     queryTool,
     getContextTool,
@@ -36,6 +43,12 @@ const allTools = [
     impactTool,
     annotateTool,
     exportKbTool,
+    diffReviewTool,
+    crossProjectQueryTool,
+    archCheckTool,
+    communitiesTool,
+    godNodesTool,
+    detectLinksTool,
 ];
 const apiUrl = process.env.CORTEX_API_URL || 'http://localhost:3100';
 const apiKey = process.env.CORTEX_API_KEY ||
@@ -78,6 +91,14 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 });
 // Start
 async function main() {
+    // Health check: verify Cortex API is reachable
+    try {
+        await client.health();
+        console.error('Cortex API connected at', apiUrl);
+    }
+    catch {
+        console.error(`Warning: Cortex API at ${apiUrl} is not reachable. Tools will fail until the API is running.`);
+    }
     const transport = new StdioServerTransport();
     await server.connect(transport);
     console.error('Cortex MCP server running on stdio');

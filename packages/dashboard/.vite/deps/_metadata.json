@@ -1,0 +1,118 @@
+{
+  "hash": "c94d9d8a",
+  "configHash": "53234e1a",
+  "lockfileHash": "67c02259",
+  "browserHash": "66e5dd44",
+  "optimized": {
+    "react/jsx-dev-runtime": {
+      "src": "../../../../node_modules/.pnpm/react@19.2.4/node_modules/react/jsx-dev-runtime.js",
+      "file": "react_jsx-dev-runtime.js",
+      "fileHash": "fcdf8033",
+      "needsInterop": true
+    },
+    "react": {
+      "src": "../../../../node_modules/.pnpm/react@19.2.4/node_modules/react/index.js",
+      "file": "react.js",
+      "fileHash": "e1a69992",
+      "needsInterop": true
+    },
+    "react-dom/client": {
+      "src": "../../../../node_modules/.pnpm/react-dom@19.2.4_react@19.2.4/node_modules/react-dom/client.js",
+      "file": "react-dom_client.js",
+      "fileHash": "a34cb70c",
+      "needsInterop": true
+    },
+    "react-router-dom": {
+      "src": "../../../../node_modules/.pnpm/react-router-dom@7.14.0_react-dom@19.2.4_react@19.2.4__react@19.2.4/node_modules/react-router-dom/dist/index.mjs",
+      "file": "react-router-dom.js",
+      "fileHash": "e0b6d313",
+      "needsInterop": false
+    },
+    "lucide-react": {
+      "src": "../../../../node_modules/.pnpm/lucide-react@1.7.0_react@19.2.4/node_modules/lucide-react/dist/esm/lucide-react.js",
+      "file": "lucide-react.js",
+      "fileHash": "4659d90c",
+      "needsInterop": false
+    },
+    "d3-force": {
+      "src": "../../../../node_modules/.pnpm/d3-force@3.0.0/node_modules/d3-force/src/index.js",
+      "file": "d3-force.js",
+      "fileHash": "f158e324",
+      "needsInterop": false
+    },
+    "vis-network": {
+      "src": "../../../../node_modules/.pnpm/vis-network@10.0.2_@egjs+hammerjs@2.0.17_component-emitter@2.0.0_keycharm@0.4.0_uuid@11_d1428cac938e609af97f1b1ffc235b8d/node_modules/vis-network/peer/esm/vis-network.mjs",
+      "file": "vis-network.js",
+      "fileHash": "dd04d517",
+      "needsInterop": false
+    },
+    "vis-data": {
+      "src": "../../../../node_modules/.pnpm/vis-data@8.0.3_uuid@11.1.0_vis-util@6.0.0_@egjs+hammerjs@2.0.17_component-emitter@2.0.0_/node_modules/vis-data/peer/esm/vis-data.mjs",
+      "file": "vis-data.js",
+      "fileHash": "2f48860c",
+      "needsInterop": false
+    },
+    "recharts": {
+      "src": "../../../../node_modules/.pnpm/recharts@3.8.1_@types+react@19.2.14_react-dom@19.2.4_react@19.2.4__react-is@19.2.4_react@19.2.4_redux@5.0.1/node_modules/recharts/es6/index.js",
+      "file": "recharts.js",
+      "fileHash": "cb8b2446",
+      "needsInterop": false
+    },
+    "react/jsx-runtime": {
+      "src": "../../../../node_modules/.pnpm/react@19.2.4/node_modules/react/jsx-runtime.js",
+      "file": "react_jsx-runtime.js",
+      "fileHash": "cbf29643",
+      "needsInterop": true
+    },
+    "clsx": {
+      "src": "../../../../node_modules/.pnpm/clsx@2.1.1/node_modules/clsx/dist/clsx.mjs",
+      "file": "clsx.js",
+      "fileHash": "4f1ad8b6",
+      "needsInterop": false
+    },
+    "tailwind-merge": {
+      "src": "../../../../node_modules/.pnpm/tailwind-merge@3.5.0/node_modules/tailwind-merge/dist/bundle-mjs.mjs",
+      "file": "tailwind-merge.js",
+      "fileHash": "e3df6c8d",
+      "needsInterop": false
+    },
+    "@assistant-ui/react": {
+      "src": "../../../../node_modules/.pnpm/@assistant-ui+react@0.12.24_@types+react-dom@19.2.3_@types+react@19.2.14__@types+react@_1443618c8f190003c0f37875367ffd78/node_modules/@assistant-ui/react/dist/index.js",
+      "file": "@assistant-ui_react.js",
+      "fileHash": "0b9e191e",
+      "needsInterop": false
+    },
+    "@assistant-ui/react-data-stream": {
+      "src": "../../../../node_modules/.pnpm/@assistant-ui+react-data-stream@0.12.10_@assistant-ui+store@0.2.6_@assistant-ui+tap@0.5_0b47d1b53670e808a4542a8b4f328a4f/node_modules/@assistant-ui/react-data-stream/dist/index.js",
+      "file": "@assistant-ui_react-data-stream.js",
+      "fileHash": "9cfc01e5",
+      "needsInterop": false
+    }
+  },
+  "chunks": {
+    "chunk-EVNWH6M7": {
+      "file": "chunk-EVNWH6M7.js"
+    },
+    "chunk-4XUR72XU": {
+      "file": "chunk-4XUR72XU.js"
+    },
+    "chunk-EZOGSO4P": {
+      "file": "chunk-EZOGSO4P.js"
+    },
+    "chunk-EWUVWUVW": {
+      "file": "chunk-EWUVWUVW.js"
+    },
+    "chunk-DKM36WT5": {
+      "file": "chunk-DKM36WT5.js"
+    },
+    "chunk-YAJ64PPY": {
+      "file": "chunk-YAJ64PPY.js"
+    },
+    "chunk-UZS3FZR7": {
+      "file": "chunk-UZS3FZR7.js"
+    },
+    "chunk-DP4XHQAG": {
+      "file": "chunk-DP4XHQAG.js"
+    }
+  }
+}

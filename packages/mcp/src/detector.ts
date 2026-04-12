@@ -1,10 +1,11 @@
-import simpleGit from 'simple-git';
+import { simpleGit } from 'simple-git';
 
 export interface DetectedProject {
   projectId: string;
   repoId: string;
   projectName: string;
   repoName: string;
+  repoBranch: string;
 }
 
 // In-memory cache: cwd → { result, timestamp }
@@ -44,13 +45,19 @@ async function detectProjectUncached(
   apiKey: string,
 ): Promise<DetectedProject | null> {
   try {
-    // 1. Get git remote URL
     const git = simpleGit(cwd);
-    const remotes = await git.getRemotes(true);
+
+    // 1. Get git remote URL and current branch
+    const [remotes, branchResult] = await Promise.all([
+      git.getRemotes(true),
+      git.branch().catch(() => null),
+    ]);
+
     const origin = remotes.find(r => r.name === 'origin');
     if (!origin?.refs?.fetch) return null;
 
     const remoteUrl = normalizeGitUrl(origin.refs.fetch);
+    const currentBranch = branchResult?.current ?? 'main';
 
     // 2. Get all projects and repos from API in one pass
     const projectsRes = await fetch(`${apiBaseUrl}/api/projects`, {
@@ -80,6 +87,7 @@ async function detectProjectUncached(
             repoId: repo.id,
             projectName: project.name,
             repoName: repo.name,
+            repoBranch: currentBranch,
           };
         }
       }
@@ -96,6 +104,7 @@ async function detectProjectUncached(
               repoId: repo.id,
               projectName: project.name,
               repoName: repo.name,
+              repoBranch: currentBranch,
             };
           }
         }

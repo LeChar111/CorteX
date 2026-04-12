@@ -1,19 +1,30 @@
 import { getDb } from '@cortex/db';
-import {
-  updateScanJob,
-  updateRepo,
-  insertEvent,
-  upsertSource,
-} from '@cortex/db';
-import { discoverFiles, getHeadCommit, getChangedFiles } from './source-loader.js';
-import { detectLanguage, parseSource } from './parsers/tree-sitter.js';
-import { chunkFile } from './parsers/chunker.js';
-import { naiveChunk } from './parsers/naive-chunker.js';
-import { extractStatic } from './extractors/static-extractor.js';
-import { extractConfig } from './extractors/config-extractor.js';
-import { extractBatchParallel, RateLimitError } from './extractors/llm-extractor.js';
-import type { ExtractWithLLMParams, ExtractionResult } from './extractors/llm-extractor.js';
-import { formatForLightRAG } from './formatter.js';
+import { updateScanJob, updateRepo, insertEvent } from '@cortex/db';
+import { getHeadCommit } from './source-loader.js';
+import { importGraphJSON } from './graphify-importer.js';
+import { spawn } from 'node:child_process';
+import { tmpdir } from 'node:os';
+import { join, resolve, dirname } from 'node:path';
+import { randomUUID } from 'node:crypto';
+import { existsSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+
+/**
+ * Resolve the cortex-scan Python CLI path.
+ * Checks: 1) CORTEX_SCAN_BIN env, 2) local venv, 3) PATH fallback.
+ */
+function resolveCortexScan(): string {
+  // Explicit override
+  if (process.env['CORTEX_SCAN_BIN']) return process.env['CORTEX_SCAN_BIN'];
+
+  // Local venv (relative to project root)
+  const thisDir = dirname(fileURLToPath(import.meta.url));
+  const localVenv = resolve(thisDir, '../../../services/graphify-bridge/.venv/bin/cortex-scan');
+  if (existsSync(localVenv)) return localVenv;
+
+  // Fallback: hope it's in PATH
+  return 'cortex-scan';
+}
 
 export interface ScanOptions {
   projectId: string;
@@ -24,276 +35,161 @@ export interface ScanOptions {
   sourcePath: string;
   techStack: string[];
   scanJobId: string;
-  lightragUrl: string;
-  lastScannedCommit?: string;
 }
 
 export interface ScanResult {
   filesProcessed: number;
-  chunksProcessed: number;
-  entitiesExtracted: number;
-  relationsExtracted: number;
-  documentsIngested: number;
+  nodesExtracted: number;
+  edgesExtracted: number;
+  communitiesDetected: number;
+  nodesImported: number;
+  edgesImported: number;
 }
 
-class LightRAGClient {
-  constructor(private baseUrl: string) {}
-
-  async ingest(text: string, metadata?: Record<string, string>): Promise<void> {
-    const res = await fetch(`${this.baseUrl}/documents/text`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text, metadata }),
+function runGraphifyBridge(args: {
+  sourcePath: string;
+  outputPath: string;
+  projectId: string;
+  projectName: string;
+  repoId: string;
+  repoName: string;
+  onProgress?: (progress: Record<string, unknown>) => void;
+}): Promise<Record<string, unknown>> {
+  return new Promise((resolve, reject) => {
+    const cortexScanBin = resolveCortexScan();
+    const proc = spawn(cortexScanBin, [
+      '--source', args.sourcePath,
+      '--output', args.outputPath,
+      '--project-id', args.projectId,
+      '--project-name', args.projectName,
+      '--repo-id', args.repoId,
+      '--repo-name', args.repoName,
+    ], {
+      stdio: ['ignore', 'pipe', 'pipe'],
+      env: { ...process.env },
     });
-    if (!res.ok) {
-      const body = await res.text();
-      throw new Error(`LightRAG ingest failed (${res.status}): ${body}`);
-    }
-  }
+
+    let stdout = '';
+    let stderr = '';
+
+    proc.stdout.on('data', (data: Buffer) => {
+      stdout += data.toString();
+    });
+
+    proc.stderr.on('data', (data: Buffer) => {
+      const line = data.toString().trim();
+      stderr += line + '\n';
+      try {
+        const parsed = JSON.parse(line);
+        if (parsed.progress && args.onProgress) {
+          args.onProgress(parsed.progress);
+        }
+      } catch {
+        if (line) console.log(`[graphify] ${line}`);
+      }
+    });
+
+    proc.on('close', (code) => {
+      if (code !== 0) {
+        reject(new Error(`graphify bridge exited with code ${code}: ${stderr}`));
+        return;
+      }
+      try {
+        // graphify may print progress lines to stdout before the JSON result.
+        // Extract the last JSON object from stdout.
+        const lines = stdout.trim().split('\n');
+        let jsonStr = '';
+        for (let i = lines.length - 1; i >= 0; i--) {
+          const line = lines[i]!.trim();
+          if (line.startsWith('{')) {
+            jsonStr = lines.slice(i).join('\n');
+            break;
+          }
+        }
+        if (!jsonStr) jsonStr = stdout;
+
+        const result = JSON.parse(jsonStr);
+        if (result.error) {
+          reject(new Error(`graphify bridge error: ${result.error}`));
+          return;
+        }
+        resolve(result);
+      } catch {
+        reject(new Error(`Failed to parse graphify output: ${stdout.slice(-500)}`));
+      }
+    });
+
+    proc.on('error', (err) => {
+      reject(new Error(`Failed to spawn graphify bridge: ${err.message}`));
+    });
+  });
 }
 
 export async function scanRepo(options: ScanOptions): Promise<ScanResult> {
   const {
-    projectId,
-    projectName,
-    repoId,
-    repoName,
-    branch,
-    sourcePath,
-    techStack,
-    scanJobId,
-    lightragUrl,
+    projectId, projectName, repoId, repoName,
+    branch: _branch, sourcePath, scanJobId,
   } = options;
 
   const db = getDb();
-  const lightrag = new LightRAGClient(lightragUrl);
-
-  // Step 1: Update scan job status to 'running'
-  await updateScanJob(db, scanJobId, {
-    status: 'running',
-    startedAt: new Date(),
-  });
-
   const result: ScanResult = {
     filesProcessed: 0,
-    chunksProcessed: 0,
-    entitiesExtracted: 0,
-    relationsExtracted: 0,
-    documentsIngested: 0,
+    nodesExtracted: 0,
+    edgesExtracted: 0,
+    communitiesDetected: 0,
+    nodesImported: 0,
+    edgesImported: 0,
   };
 
   try {
-    // Step 2: Discover files
-    const allFiles = await discoverFiles(sourcePath);
+    // Phase 1: Run graphify bridge
+    await updateScanJob(db, scanJobId, {
+      stats: { phase: 'graphify_extraction' } as unknown as Record<string, unknown>,
+    });
 
-    // If we have a previous commit, only process changed files (diff mode)
-    let files = allFiles;
-    if (options.lastScannedCommit) {
-      const changedPaths = await getChangedFiles(sourcePath, options.lastScannedCommit);
-      if (changedPaths.length > 0) {
-        const changedSet = new Set(changedPaths);
-        files = allFiles.filter((f) => changedSet.has(f.relativePath));
-      }
-      // If no changed files detected, still scan all (fallback)
-    }
+    const outputPath = join(tmpdir(), `cortex-graph-${randomUUID()}.json`);
 
-    // Languages that skip LLM extraction (config/data/markup files)
-    const SKIP_LLM_LANGUAGES = new Set([
-      'json', 'yaml', 'yml', 'toml', 'markdown', 'md', 'text', 'env',
-      'ini', 'cfg', 'config', 'xml', 'css', 'scss', 'html', 'sql',
-      'dockerfile', 'makefile', 'cmake', 'bitbake', 'rst', 'graphql',
-    ]);
-
-    const BATCH_SIZE = 15;
-
-    // ── Pass 1: Parse all files, collect chunks, do static extraction ──
-    interface FileData {
-      file: typeof files[0];
-      language: string;
-      chunks: ReturnType<typeof naiveChunk>;
-      staticEntities: ReturnType<typeof extractStatic>;
-      configEntities: ReturnType<typeof extractConfig>;
-      skipLLM: boolean;
-    }
-
-    const allFileData: FileData[] = [];
-
-    for (const file of files) {
-      const language = detectLanguage(file.relativePath) ?? 'unknown';
-
-      // Upsert source in DB
-      await upsertSource(db, {
-        repoId,
-        branch,
-        filePath: file.relativePath,
-        fileHash: file.hash,
-        language,
-        lastScannedAt: new Date(),
-        metadata: { size: file.size, techStack },
-      });
-
-      result.filesProcessed++;
-
-      // Update stats periodically (every 5 files)
-      if (result.filesProcessed % 5 === 0) {
+    const graphifyResult = await runGraphifyBridge({
+      sourcePath,
+      outputPath,
+      projectId,
+      projectName,
+      repoId,
+      repoName,
+      onProgress: async (progress) => {
         await updateScanJob(db, scanJobId, {
-          stats: { ...result, totalFiles: files.length, phase: 'parsing' } as unknown as Record<string, unknown>,
-        });
-      }
+          stats: { ...result, ...progress, phase: 'graphify_extraction' } as unknown as Record<string, unknown>,
+        }).catch(() => {});
+      },
+    }) as {
+      graph_path: string;
+      stats: { total_files: number; nodes: number; edges: number; communities: number };
+      communities: Record<string, { members: string[]; size: number; cohesion: number }>;
+      god_nodes: Array<{ id: string; label: string; edges: number }>;
+      surprising_connections: Array<{ source: string; target: string; note?: string }>;
+      metadata: { project_id: string; project_name: string; repo_id: string; repo_name: string };
+    };
 
-      // Parse and chunk
-      let chunks;
-      let tree = null;
+    result.filesProcessed = graphifyResult.stats.total_files;
+    result.nodesExtracted = graphifyResult.stats.nodes;
+    result.edgesExtracted = graphifyResult.stats.edges;
+    result.communitiesDetected = graphifyResult.stats.communities;
 
-      if (language !== 'unknown') {
-        tree = parseSource(file.content, language);
-      }
-
-      if (tree) {
-        chunks = chunkFile(file.content, file.relativePath, language, tree.rootNode);
-        if (chunks.length === 0) {
-          chunks = naiveChunk(file.content, file.relativePath, language);
-        }
-      } else {
-        chunks = naiveChunk(file.content, file.relativePath, language);
-      }
-
-      result.chunksProcessed += chunks.length;
-
-      // Extract static entities from AST
-      const staticEntities = tree
-        ? extractStatic(tree.rootNode, file.content, file.relativePath, language)
-        : [];
-
-      result.entitiesExtracted += staticEntities.length;
-
-      // Extract config entities from non-code files
-      const configEntities = extractConfig(file.content, file.relativePath, language);
-      result.entitiesExtracted += configEntities.length;
-
-      const skipLLM = SKIP_LLM_LANGUAGES.has(language.toLowerCase());
-      allFileData.push({ file, language, chunks, staticEntities, configEntities, skipLLM });
-    }
-
-    // ── Pass 2: Batch all LLM extractions in parallel ──
-    // Collect all LLM extraction params with a reference back to the file index
-    const llmParams: { fileIndex: number; params: ExtractWithLLMParams }[] = [];
-
-    for (let fi = 0; fi < allFileData.length; fi++) {
-      const fd = allFileData[fi]!;
-      if (fd.skipLLM) continue;
-
-      for (let i = 0; i < fd.chunks.length; i += BATCH_SIZE) {
-        const batch = fd.chunks.slice(i, i + BATCH_SIZE);
-        const batchContent = batch.map((c) => c.content).join('\n\n---\n\n');
-
-        llmParams.push({
-          fileIndex: fi,
-          params: {
-            project_name: projectName,
-            repo_name: repoName,
-            file_path: fd.file.relativePath,
-            language: fd.language,
-            tech_stack: techStack.join(', '),
-            code_chunk: batchContent,
-            existing_entities: fd.staticEntities.map((e) => e.qualifiedName).join('\n'),
-          },
-        });
-      }
-    }
-
-    // Update stats before LLM extraction phase
+    // Phase 2: Import into PostgreSQL
     await updateScanJob(db, scanJobId, {
-      stats: { ...result, totalFiles: files.length, phase: 'llm_extraction', llmBatches: llmParams.length } as unknown as Record<string, unknown>,
+      stats: { ...result, phase: 'pg_import' } as unknown as Record<string, unknown>,
     });
 
-    // Run all LLM extractions in parallel (concurrency=5)
-    const llmResults = await extractBatchParallel(
-      llmParams.map((lp) => lp.params),
-      5,
-    );
+    const importResult = await importGraphJSON(outputPath, graphifyResult);
+    result.nodesImported = importResult.nodesImported;
+    result.edgesImported = importResult.edgesImported;
 
-    // Merge LLM results back into per-file extractions
-    const perFileExtractions: Map<number, ExtractionResult> = new Map();
-    for (let i = 0; i < llmParams.length; i++) {
-      const fileIndex = llmParams[i]!.fileIndex;
-      const extraction = llmResults[i]!;
-      let combined = perFileExtractions.get(fileIndex);
-      if (!combined) {
-        combined = { entities: [], relations: [] };
-        perFileExtractions.set(fileIndex, combined);
-      }
-      combined.entities.push(...extraction.entities);
-      combined.relations.push(...extraction.relations);
-    }
-
-    // Count LLM extraction results
-    for (const ext of perFileExtractions.values()) {
-      result.entitiesExtracted += ext.entities.length;
-      result.relationsExtracted += ext.relations.length;
-    }
-
-    // ── Pass 3: Ingest all results to LightRAG in parallel (concurrency=5) ──
-    const ingestTasks: (() => Promise<void>)[] = [];
-
-    for (let fi = 0; fi < allFileData.length; fi++) {
-      const fd = allFileData[fi]!;
-      const combinedExtractions = perFileExtractions.get(fi) ?? { entities: [], relations: [] };
-
-      // Add config entities
-      for (const ce of (fd.configEntities ?? [])) {
-        combinedExtractions.entities.push({
-          type: ce.type,
-          qualified_name: ce.name,
-          name: ce.name,
-          description: ce.description,
-          metadata: ce.metadata,
-        });
-      }
-
-      const doc = formatForLightRAG({
-        filePath: fd.file.relativePath,
-        projectName,
-        repoName,
-        language: fd.language,
-        sourceCode: fd.file.content,
-        extraction: combinedExtractions,
-      });
-
-      ingestTasks.push(async () => {
-        await lightrag.ingest(doc, {
-          projectId,
-          repoId,
-          branch,
-          filePath: fd.file.relativePath,
-          language: fd.language,
-        });
-        result.documentsIngested++;
-      });
-    }
-
-    // Update stats before ingestion phase
-    await updateScanJob(db, scanJobId, {
-      stats: { ...result, totalFiles: files.length, phase: 'ingestion', totalDocuments: ingestTasks.length } as unknown as Record<string, unknown>,
-    });
-
-    // Execute ingestion with concurrency limit of 5
-    for (let i = 0; i < ingestTasks.length; i += 5) {
-      const batch = ingestTasks.slice(i, i + 5);
-      await Promise.all(batch.map((fn) => fn()));
-
-      // Update progress during ingestion
-      await updateScanJob(db, scanJobId, {
-        stats: { ...result, totalFiles: files.length, phase: 'ingestion', totalDocuments: ingestTasks.length } as unknown as Record<string, unknown>,
-      });
-    }
-
-    // Step 4: Update repo lastScannedAt / lastScannedCommit
+    // Phase 3: Update repo metadata
     let commitHash: string | null = null;
     try {
       commitHash = await getHeadCommit(sourcePath);
     } catch {
-      // Non-fatal: proceed without commit hash
+      // Non-fatal
     }
 
     await updateRepo(db, repoId, {
@@ -301,14 +197,13 @@ export async function scanRepo(options: ScanOptions): Promise<ScanResult> {
       ...(commitHash ? { lastScannedCommit: commitHash } : {}),
     });
 
-    // Step 5: Update scan job to 'completed' with stats
+    // Phase 4: Finalize
     await updateScanJob(db, scanJobId, {
       status: 'completed',
       completedAt: new Date(),
       stats: result as unknown as Record<string, unknown>,
     });
 
-    // Step 6: Insert scan.completed event
     await insertEvent(db, {
       type: 'scan.completed',
       projectId,
@@ -321,30 +216,6 @@ export async function scanRepo(options: ScanOptions): Promise<ScanResult> {
   } catch (err) {
     const errorMessage = err instanceof Error ? err.message : String(err);
 
-    if (err instanceof RateLimitError) {
-      // Rate limited — pause the scan so it can be resumed later
-      console.warn(`[pipeline] Rate limited — pausing scan ${scanJobId}: ${errorMessage}`);
-
-      await updateScanJob(db, scanJobId, {
-        status: 'paused' as any,
-        error: errorMessage,
-        // Save partial progress in stats so we know where to resume
-        stats: { ...result, pausedAt: new Date().toISOString(), reason: 'rate_limit' } as unknown as Record<string, unknown>,
-      });
-
-      await insertEvent(db, {
-        type: 'scan.paused',
-        projectId,
-        repoId,
-        userId: null,
-        payload: { reason: 'rate_limit', partialResult: result },
-      });
-
-      // Don't rethrow — the job is paused, not failed
-      return result;
-    }
-
-    // Other errors — mark as failed
     await updateScanJob(db, scanJobId, {
       status: 'failed',
       completedAt: new Date(),

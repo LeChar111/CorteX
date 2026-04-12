@@ -10,4 +10,5 @@ export * from './queries/snapshots.js';
 export * from './queries/project-links.js';
 export * from './queries/arch-rules.js';
 export * from './queries/annotations.js';
+export * from './queries/graph.js';
 //# sourceMappingURL=index.d.ts.map

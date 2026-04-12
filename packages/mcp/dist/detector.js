@@ -1,4 +1,7 @@
-import simpleGit from 'simple-git';
+import { simpleGit } from 'simple-git';
+// In-memory cache: cwd → { result, timestamp }
+const cache = new Map();
+const CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
 // Normalize git URLs for comparison
 // git@github.com:user/repo.git → github.com/user/repo
 // https://github.com/user/repo.git → github.com/user/repo
@@ -10,29 +13,47 @@ export function normalizeGitUrl(url) {
         .replace(':', '/');
 }
 export async function detectProject(cwd, apiBaseUrl, apiKey) {
+    // Check cache first
+    const cached = cache.get(cwd);
+    if (cached && Date.now() - cached.ts < CACHE_TTL_MS) {
+        return cached.result;
+    }
+    const result = await detectProjectUncached(cwd, apiBaseUrl, apiKey);
+    cache.set(cwd, { result, ts: Date.now() });
+    return result;
+}
+async function detectProjectUncached(cwd, apiBaseUrl, apiKey) {
     try {
-        // 1. Get git remote URL
         const git = simpleGit(cwd);
-        const remotes = await git.getRemotes(true);
+        // 1. Get git remote URL and current branch
+        const [remotes, branchResult] = await Promise.all([
+            git.getRemotes(true),
+            git.branch().catch(() => null),
+        ]);
         const origin = remotes.find(r => r.name === 'origin');
         if (!origin?.refs?.fetch)
             return null;
         const remoteUrl = normalizeGitUrl(origin.refs.fetch);
-        // 2. Get all projects and repos from API
+        const currentBranch = branchResult?.current ?? 'main';
+        // 2. Get all projects and repos from API in one pass
         const projectsRes = await fetch(`${apiBaseUrl}/api/projects`, {
             headers: { 'X-API-Key': apiKey },
         });
         if (!projectsRes.ok)
             return null;
         const projects = await projectsRes.json();
-        // 3. For each project, get repos and match
-        for (const project of projects) {
+        // Fetch all repos for all projects in parallel
+        const reposByProject = await Promise.all(projects.map(async (project) => {
             const reposRes = await fetch(`${apiBaseUrl}/api/repos?projectId=${project.id}`, {
                 headers: { 'X-API-Key': apiKey },
             });
             if (!reposRes.ok)
-                continue;
+                return { project, repos: [] };
             const repos = await reposRes.json();
+            return { project, repos };
+        }));
+        // 3. Match by cloneUrl
+        for (const { project, repos } of reposByProject) {
             for (const repo of repos) {
                 if (repo.cloneUrl && normalizeGitUrl(repo.cloneUrl) === remoteUrl) {
                     return {
@@ -40,20 +61,15 @@ export async function detectProject(cwd, apiBaseUrl, apiKey) {
                         repoId: repo.id,
                         projectName: project.name,
                         repoName: repo.name,
+                        repoBranch: currentBranch,
                     };
                 }
             }
         }
-        // 4. Fallback: match directory name against repo slugs
+        // 4. Fallback: match directory name against repo slugs (reuse already-fetched data)
         const dirName = cwd.split('/').pop()?.toLowerCase();
         if (dirName) {
-            for (const project of projects) {
-                const reposRes = await fetch(`${apiBaseUrl}/api/repos?projectId=${project.id}`, {
-                    headers: { 'X-API-Key': apiKey },
-                });
-                if (!reposRes.ok)
-                    continue;
-                const repos = await reposRes.json();
+            for (const { project, repos } of reposByProject) {
                 for (const repo of repos) {
                     if (repo.slug.toLowerCase() === dirName || repo.name.toLowerCase() === dirName) {
                         return {
@@ -61,6 +77,7 @@ export async function detectProject(cwd, apiBaseUrl, apiKey) {
                             repoId: repo.id,
                             projectName: project.name,
                             repoName: repo.name,
+                            repoBranch: currentBranch,
                         };
                     }
                 }

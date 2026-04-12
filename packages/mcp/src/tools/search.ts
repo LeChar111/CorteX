@@ -35,7 +35,7 @@ export const searchTool = {
     const types = args.types as string[] | undefined;
     const limit = args.limit as number | undefined;
 
-    // Enrich query with type filter so LightRAG can scope results
+    // Enrich query with type filter to scope results
     let enrichedQuery = query;
     if (types && types.length > 0) {
       enrichedQuery = `[Types: ${types.join(', ')}] ${query}`;

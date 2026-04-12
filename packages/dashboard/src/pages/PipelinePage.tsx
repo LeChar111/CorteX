@@ -29,12 +29,12 @@ import { useAsyncData } from '../hooks/useAsyncData.ts';
 import type { ScanJob } from '../types.ts';
 
 // ─── Types ─────────────────────────────────────────────
-type PipelineView = 'scan' | 'lightrag';
+type PipelineView = 'scan' | 'documents';
 type TabKey = 'running' | 'queued' | 'paused' | 'failed' | 'completed' | 'documents';
 
 const PIPELINE_STEPS: { key: PipelineView; label: string; sublabel: string; icon: React.ElementType }[] = [
-  { key: 'scan', label: 'Scan Pipeline', sublabel: 'Code extraction via Claude CLI', icon: Layers },
-  { key: 'lightrag', label: 'LightRAG Pipeline', sublabel: 'Document ingestion & Graph RAG', icon: Brain },
+  { key: 'scan', label: 'Scan Pipeline', sublabel: 'Code extraction via graphify', icon: Layers },
+  { key: 'documents', label: 'Document Status', sublabel: 'Graph document status', icon: Brain },
 ];
 
 interface QueueData {
@@ -51,7 +51,7 @@ interface DocData {
   total: number;
 }
 
-interface LightRAGPipeline {
+interface DocumentPipeline {
   busy: boolean;
   job_name: string;
   docs: number;
@@ -68,7 +68,7 @@ const TABS: { key: TabKey; label: string; icon: React.ElementType }[] = [
   { key: 'paused', label: 'Paused', icon: Pause },
   { key: 'failed', label: 'Failed', icon: XCircle },
   { key: 'completed', label: 'Completed', icon: CheckCircle2 },
-  { key: 'documents', label: 'LightRAG Docs', icon: FileText },
+  { key: 'documents', label: 'Graph Docs', icon: FileText },
 ];
 
 // ─── Main Component ────────────────────────────────────
@@ -127,7 +127,7 @@ export function PipelinePage() {
         })}
       </div>
 
-      {view === 'scan' ? <ScanPipelineView /> : <LightRAGPipelineView />}
+      {view === 'scan' ? <ScanPipelineView /> : <DocumentPipelineView />}
     </div>
   );
 }
@@ -227,7 +227,7 @@ function ScanPipelineView() {
     paused: queue?.paused.length ?? 0,
     failed: queue?.failed.length ?? 0,
     completed: queue?.completed.length ?? 0,
-    documents: docData?.total ?? (docStatus?.all ?? Object.entries(docStatus ?? {}).filter(([k]) => k !== 'all').reduce((a, [, b]) => a + b, 0)),
+    documents: docData?.total ?? ((docStatus as Record<string, unknown>)?.nodes as number ?? 0),
   };
 
   const statCards: { key: TabKey; label: string; color: string; icon: React.ElementType; animate?: boolean }[] = [
@@ -269,7 +269,7 @@ function ScanPipelineView() {
         >
           <div className="flex items-center gap-2 mb-1">
             <FileText className="w-4 h-4 text-accent" />
-            <span className="text-md font-medium text-muted uppercase tracking-wide">LightRAG Docs</span>
+            <span className="text-md font-medium text-muted uppercase tracking-wide">Graph Docs</span>
           </div>
           <span className="text-6xl font-bold justify-end text-accent">{tabCounts.documents}</span>
         </button>
@@ -509,10 +509,10 @@ function ScanPipelineView() {
   );
 }
 
-// ─── LightRAG Pipeline View ───────────────────────────
-function LightRAGPipelineView() {
-  const { data: pipeline, loading, refetch } = usePolling<LightRAGPipeline>(
-    () => api.getLightRAGPipeline(),
+// ─── Document Pipeline View ───────────────────────────
+function DocumentPipelineView() {
+  const { data: pipeline, loading, refetch } = usePolling<DocumentPipeline>(
+    () => api.getDocumentPipeline(),
     3000,
   );
 
@@ -559,11 +559,11 @@ function LightRAGPipelineView() {
           { label: 'Pending', icon: Clock, value: pending, sub: pct(pending), color: pending > 0 ? 'text-warning' : 'text-muted', iconColor: 'text-warning' },
           { label: 'Failed', icon: XCircle, value: failed, sub: pct(failed), color: failed > 0 ? 'text-error' : 'text-muted', iconColor: 'text-error' },
           { label: 'Documents', icon: FileText, value: total, sub: `${pipeline.busy ? 'processing' : 'idle'}`, color: 'text-text', iconColor: 'text-accent' },
-          { label: 'Graph Entities', icon: Brain, value: counts.graphLabels ?? '—', sub: 'nodes extracted', color: 'text-accent', iconColor: 'text-accent' },
-        ] as const).map(({ label, icon: Icon, value, sub, color, iconColor, animate }) => (
+          { label: 'Graph Nodes', icon: Brain, value: counts.graphLabels ?? counts.processed ?? 0, sub: `${counts.graphEdges ?? 0} edges`, color: 'text-accent', iconColor: 'text-accent' },
+        ] as const).map(({ label, icon: Icon, value, sub, color, iconColor, ...rest }) => (
           <div key={label} className="bg-card rounded-[--radius-lg] border border-border-light shadow-sm p-4">
             <div className="flex items-center gap-2 mb-1">
-              <Icon className={cn('w-4 h-4', iconColor, animate && 'animate-spin')} />
+              <Icon className={cn('w-4 h-4', iconColor, 'animate' in rest && rest.animate && 'animate-spin')} />
               <span className="text-md font-medium text-muted uppercase tracking-wide">{label}</span>
             </div>
             <span className={cn('text-4xl font-bold', color)}>{typeof value === 'number' ? value.toLocaleString() : value}</span>
@@ -606,7 +606,7 @@ function LightRAGPipelineView() {
         </button>
         {!pipeline.busy && (
           <button
-            onClick={() => pipelineAction(() => api.scanLightRAGDocuments())}
+            onClick={() => pipelineAction(() => api.scanDocuments())}
             disabled={actionLoading}
             className="inline-flex items-center gap-2 px-4 py-2 text-sm font-semibold rounded-lg bg-success/10 text-success hover:bg-success/20 transition-colors disabled:opacity-50"
           >
@@ -616,7 +616,7 @@ function LightRAGPipelineView() {
         )}
         {pipeline.busy && (
           <button
-            onClick={() => pipelineAction(() => api.cancelLightRAGPipeline())}
+            onClick={() => pipelineAction(() => api.cancelPipeline())}
             disabled={actionLoading}
             className="inline-flex items-center gap-2 px-4 py-2 text-sm font-semibold rounded-lg bg-error/10 text-error hover:bg-error/20 transition-colors disabled:opacity-50"
           >
@@ -754,7 +754,7 @@ function DocumentsPanel({ docData, docStatus, onRefresh }: { docData: DocData | 
     <div className="space-y-4">
       <div className="bg-card rounded-[--radius-lg] border border-border-light shadow-sm p-6">
         <div className="flex items-center justify-between mb-4">
-          <h3 className="text-sm font-semibold text-text">LightRAG Document Status</h3>
+          <h3 className="text-sm font-semibold text-text">Document Status</h3>
           <button onClick={onRefresh} className="text-xs text-accent hover:underline inline-flex items-center gap-1">
             <RefreshCw className="w-3 h-3" /> Refresh
           </button>
@@ -780,7 +780,7 @@ function DocumentsPanel({ docData, docStatus, onRefresh }: { docData: DocData | 
             </div>
           </div>
         )}
-        {total === 0 && <EmptyState icon={FileText} message="No documents found in LightRAG" />}
+        {total === 0 && <EmptyState icon={FileText} message="No documents found" />}
       </div>
     </div>
   );

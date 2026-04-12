@@ -1,17 +1,15 @@
 import { Hono } from 'hono';
 import {
   getDb, listProjects, listReposByProject, listSnapshots,
-  createSnapshot, insertEvent,
+  createSnapshot, insertEvent, getGraphFull, upsertGraphNode, graphEdges,
+  projects, repos,
 } from '@cortex/db';
-import { LightRAGClient } from '../../lightrag/client.js';
 
 export const exportImportRoutes = new Hono();
 
-// GET /export — full snapshot of Cortex metadata + LightRAG graph + documents
+// GET /export — full snapshot of Cortex metadata + graph
 exportImportRoutes.get('/export', async (c) => {
   const db = getDb();
-  const lightragUrl = process.env['LIGHTRAG_URL'] ?? 'http://localhost:9621';
-  const client = new LightRAGClient(lightragUrl);
 
   const allProjects = await listProjects(db);
   const reposByProject: Record<string, unknown[]> = {};
@@ -19,13 +17,10 @@ exportImportRoutes.get('/export', async (c) => {
     reposByProject[p.id] = await listReposByProject(db, p.id);
   }
 
-  const [docData, graphData] = await Promise.all([
-    client.getDocumentContents().catch(() => ({ documents: [] as unknown[] })),
-    client.getGraphFull().catch(() => ({ nodes: [] as unknown[], edges: [] as unknown[] })),
-  ]);
+  const graphData = await getGraphFull(db).catch(() => ({ nodes: [] as unknown[], edges: [] as unknown[] }));
 
   const snapshot = {
-    version: '1.0',
+    version: '2.0',
     exportedAt: new Date().toISOString(),
     cortex: {
       projects: allProjects.map((p) => ({
@@ -33,9 +28,9 @@ exportImportRoutes.get('/export', async (c) => {
         repos: reposByProject[p.id] ?? [],
       })),
     },
-    lightrag: {
-      documents: docData.documents,
-      graph: graphData,
+    graph: {
+      nodes: graphData.nodes,
+      edges: graphData.edges,
     },
   };
 
@@ -43,7 +38,6 @@ exportImportRoutes.get('/export', async (c) => {
     name: `export-${new Date().toISOString().slice(0, 19).replace(/:/g, '-')}`,
     metadata: {
       projectCount: allProjects.length,
-      documentCount: docData.documents.length,
       graphNodeCount: graphData.nodes.length,
       graphEdgeCount: graphData.edges.length,
     },
@@ -58,69 +52,108 @@ exportImportRoutes.get('/export', async (c) => {
 exportImportRoutes.post('/import', async (c) => {
   const body = await c.req.json();
 
-  if (!body.version || !body.cortex || !body.lightrag) {
-    return c.json({ error: 'Invalid snapshot format. Required: version, cortex, lightrag' }, 400);
+  if (!body.version || !body.cortex) {
+    return c.json({ error: 'Invalid snapshot format. Required: version, cortex' }, 400);
   }
 
   const db = getDb();
-  const lightragUrl = process.env['LIGHTRAG_URL'] ?? 'http://localhost:9621';
-  const client = new LightRAGClient(lightragUrl);
-  const { createProject, createRepo, getProjectByName } = await import('@cortex/db');
 
-  const stats = { projectsImported: 0, reposImported: 0, documentsIngested: 0, errors: [] as string[] };
+  const stats = { projectsImported: 0, reposImported: 0, nodesImported: 0, edgesImported: 0, errors: [] as string[] };
 
+  // Import projects preserving original IDs (so graph nodes' FK projectId
+  // remains valid). Conflict on id or name is skipped to keep import idempotent.
   for (const projectData of body.cortex.projects ?? []) {
     try {
-      await createProject(db, {
-        name: projectData.name,
-        description: projectData.description,
-        metadata: projectData.metadata,
-      });
-      stats.projectsImported++;
-    } catch {
-      // Project may already exist
+      const inserted = await db.insert(projects)
+        .values({
+          id: projectData.id,
+          name: projectData.name,
+          description: projectData.description ?? null,
+          metadata: projectData.metadata ?? null,
+        })
+        .onConflictDoNothing()
+        .returning();
+      if (inserted.length > 0) stats.projectsImported++;
+    } catch (err) {
+      stats.errors.push(`Project "${projectData.name}" import failed: ${err instanceof Error ? err.message : String(err)}`);
     }
 
     for (const repoData of projectData.repos ?? []) {
       try {
-        const project = await getProjectByName(db, projectData.name);
-        if (project) {
-          await createRepo(db, {
-            projectId: project.id,
+        const inserted = await db.insert(repos)
+          .values({
+            id: repoData.id,
+            projectId: projectData.id,
             name: repoData.name,
             slug: repoData.slug,
             cloneUrl: repoData.cloneUrl,
             provider: repoData.provider,
-            techStack: repoData.techStack,
+            techStack: repoData.techStack ?? [],
             defaultBranch: repoData.defaultBranch,
-            trackedBranches: repoData.trackedBranches,
-            metadata: repoData.metadata,
-          });
-          stats.reposImported++;
-        }
-      } catch {
-        // Repo may already exist
+            trackedBranches: repoData.trackedBranches ?? null,
+            metadata: repoData.metadata ?? null,
+          })
+          .onConflictDoNothing()
+          .returning();
+        if (inserted.length > 0) stats.reposImported++;
+      } catch (err) {
+        stats.errors.push(`Repo "${repoData.slug}" import failed: ${err instanceof Error ? err.message : String(err)}`);
       }
     }
   }
 
-  const documents = body.lightrag.documents ?? [];
-  const BATCH_SIZE = 5;
-  for (let i = 0; i < documents.length; i += BATCH_SIZE) {
-    const batch = documents.slice(i, i + BATCH_SIZE);
-    await Promise.all(
-      batch.map(async (doc: { content?: string; text?: string; metadata?: Record<string, string> }) => {
-        try {
-          const text = doc.content ?? doc.text ?? '';
-          if (text) {
-            await client.ingest(text, doc.metadata);
-            stats.documentsIngested++;
-          }
-        } catch (err) {
-          stats.errors.push(`Doc ingest failed: ${err instanceof Error ? err.message : String(err)}`);
+  // Import graph data (v2 format) or legacy v1 snapshot format
+  const graphData = body.graph ?? body.lightrag?.graph;
+  if (graphData) {
+    // Import nodes
+    for (const node of graphData.nodes ?? []) {
+      try {
+        await upsertGraphNode(db, {
+          id: node.id,
+          label: node.label ?? node.id,
+          type: node.type ?? 'unknown',
+          fileType: node.fileType ?? node.file_type ?? null,
+          sourceFile: node.sourceFile ?? node.source_file ?? null,
+          sourceLocation: node.sourceLocation ?? node.source_location ?? null,
+          projectId: node.projectId ?? node.project_id ?? null,
+          repoId: node.repoId ?? node.repo_id ?? null,
+          communityId: node.communityId ?? node.community_id ?? null,
+          properties: node.properties ?? {},
+        });
+        stats.nodesImported++;
+      } catch (err) {
+        stats.errors.push(`Node import failed (${node.id}): ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+
+    // Import edges
+    const edgeBatch = [];
+    for (const edge of graphData.edges ?? []) {
+      edgeBatch.push({
+        sourceNodeId: edge.sourceNodeId ?? edge.source_node_id ?? edge.source,
+        targetNodeId: edge.targetNodeId ?? edge.target_node_id ?? edge.target,
+        relation: edge.relation ?? 'RELATED_TO',
+        confidence: edge.confidence ?? 'IMPORTED',
+        confidenceScore: edge.confidenceScore ?? edge.confidence_score ?? null,
+        weight: edge.weight ?? '1.0',
+        sourceFile: edge.sourceFile ?? edge.source_file ?? null,
+        properties: edge.properties ?? {},
+        projectId: edge.projectId ?? edge.project_id ?? null,
+      });
+    }
+
+    if (edgeBatch.length > 0) {
+      try {
+        const BATCH_SIZE = 500;
+        for (let i = 0; i < edgeBatch.length; i += BATCH_SIZE) {
+          const batch = edgeBatch.slice(i, i + BATCH_SIZE);
+          await db.insert(graphEdges).values(batch).onConflictDoNothing();
         }
-      }),
-    );
+        stats.edgesImported = edgeBatch.length;
+      } catch (err) {
+        stats.errors.push(`Edge import failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
   }
 
   await insertEvent(db, {

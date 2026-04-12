@@ -1,16 +1,14 @@
 import { Hono } from 'hono';
 import { Queue } from 'bullmq';
-import Redis from 'ioredis';
 import { getDb, listProjects, listReposByProject, createScanJob, insertEvent } from '@cortex/db';
+import { getRedis } from '../../redis.js';
 
 export const webhookRoutes = new Hono();
 
 let scanQueue: Queue | null = null;
 function getQueue(): Queue {
   if (!scanQueue) {
-    const redisUrl = process.env['REDIS_URL'] ?? 'redis://localhost:6379';
-    const connection = new Redis.default(redisUrl, { maxRetriesPerRequest: null });
-    scanQueue = new Queue('cortex-scan', { connection });
+    scanQueue = new Queue('cortex-scan', { connection: getRedis() });
   }
   return scanQueue;
 }

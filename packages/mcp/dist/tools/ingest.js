@@ -16,8 +16,8 @@ export const ingestTool = {
         const filePath = args.filePath;
         const language = args.language;
         const project = args.project || detected?.projectName;
-        const result = await client.ingest({ content, filePath, language, project, type: 'code' });
-        return JSON.stringify(result, null, 2);
+        await client.ingest({ content, filePath, language, project, projectId: detected?.projectId, type: 'code' });
+        return `Ingested ${filePath} (${language ?? 'auto'}) into project "${project ?? 'unknown'}".`;
     },
 };
 //# sourceMappingURL=ingest.js.map

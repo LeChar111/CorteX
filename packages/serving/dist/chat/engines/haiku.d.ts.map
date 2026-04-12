@@ -1,1 +1,1 @@
-{"version":3,"file":"haiku.d.ts","sourceRoot":"","sources":["../../../src/chat/engines/haiku.ts"],"names":[],"mappings":"AACA,OAAO,KAAK,EAAE,WAAW,EAAE,SAAS,EAAE,MAAM,aAAa,CAAC;AAY1D,wBAAsB,WAAW,CAAC,KAAK,EAAE,WAAW,EAAE,MAAM,EAAE,SAAS,GAAG,OAAO,CAAC,IAAI,CAAC,CAmCtF"}
+{"version":3,"file":"haiku.d.ts","sourceRoot":"","sources":["../../../src/chat/engines/haiku.ts"],"names":[],"mappings":"AAEA,OAAO,KAAK,EAAE,WAAW,EAAE,SAAS,EAAE,MAAM,aAAa,CAAC;AA2G1D,wBAAsB,WAAW,CAAC,KAAK,EAAE,WAAW,EAAE,MAAM,EAAE,SAAS,GAAG,OAAO,CAAC,IAAI,CAAC,CA0CtF"}

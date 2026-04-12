@@ -1,5 +1,5 @@
 import { Worker, type Job } from 'bullmq';
-import IORedis from 'ioredis';
+import { Redis as IORedis } from 'ioredis';
 import { getDb, getRepoById, getProjectById, updateScanJob, createScanJob } from '@cortex/db';
 import { cloneOrPullCached, buildAuthenticatedUrl } from '../src/source-loader.js';
 import { scanRepo } from '../src/pipeline.js';
@@ -14,7 +14,7 @@ export interface ScanJobData {
   scheduled?: boolean;
 }
 
-export function createScanWorker(redisUrl: string, lightragUrl: string) {
+export function createScanWorker(redisUrl: string) {
   const connection = new IORedis(redisUrl, { maxRetriesPerRequest: null });
 
   const worker = new Worker<ScanJobData>(
@@ -79,17 +79,13 @@ export function createScanWorker(redisUrl: string, lightragUrl: string) {
           sourcePath,
           techStack: Array.isArray(repo.techStack) ? (repo.techStack as string[]) : [],
           scanJobId,
-          lightragUrl,
-          ...(job.data.mode === 'diff' && repo.lastScannedCommit
-            ? { lastScannedCommit: repo.lastScannedCommit }
-            : {}),
         });
 
         // Mark completed
         await updateScanJob(db, scanJobId, {
           status: 'completed',
           completedAt: new Date(),
-          stats: result as Record<string, unknown>,
+          stats: result as unknown as Record<string, unknown>,
         });
 
         return result;

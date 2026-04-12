@@ -7,6 +7,7 @@ import {
   GitMerge,
   Search,
   Loader2,
+  X,
 } from 'lucide-react';
 import { api } from '../api.ts';
 import { timeAgo } from '../lib/helpers.ts';
@@ -16,6 +17,27 @@ export function Projects() {
   const [projects, setProjects] = useState<ProjectWithRepos[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
+  const [deletingProjectId, setDeletingProjectId] = useState<string | null>(null);
+
+  const handleDeleteProject = async (projectId: string) => {
+    const project = projects.find((p) => p.id === projectId);
+    if (!project) return;
+
+    if (!window.confirm(`Delete project "${project.name}"? This cannot be undone.`)) {
+      return;
+    }
+
+    try {
+      setDeletingProjectId(projectId);
+      await api.deleteProject(projectId);
+      setProjects((prev) => prev.filter((p) => p.id !== projectId));
+    } catch (err) {
+      console.error('Failed to delete project:', err);
+      window.alert('Unable to delete project. Please try again.');
+    } finally {
+      setDeletingProjectId(null);
+    }
+  };
 
   useEffect(() => {
     async function load() {
@@ -101,50 +123,65 @@ export function Projects() {
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
           {filtered.map((p) => (
-            <Link
+            <div
               key={p.id}
-              to={`/projects/${p.id}`}
-              className="group bg-card rounded-[var(--radius-lg)] border border-border-light shadow-sm p-5 hover:shadow-md hover:border-accent/30 transition-all"
+              className="group relative bg-card rounded-[var(--radius-lg)] border border-border-light shadow-sm p-5 hover:shadow-md hover:border-accent/30 transition-all"
             >
-              <div className="flex items-start gap-3 mb-3">
-                <div className="w-10 h-10 rounded-[var(--radius-md)] bg-accent-light flex items-center justify-center flex-shrink-0 group-hover:bg-accent/15 transition-colors">
-                  <FolderKanban className="w-5 h-5 text-accent" />
+              <button
+                type="button"
+                onClick={(event) => {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  handleDeleteProject(p.id);
+                }}
+                disabled={deletingProjectId === p.id}
+                className="absolute p-1 cursor-pointer top-3 right-3 inline-flex items-center justify-center rounded-full border border-border-light bg-bg text-muted transition hover:bg-hover hover:text-text disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+              <Link
+                to={`/projects/${p.id}`}
+                className="block h-full"
+              >
+                <div className="flex items-start gap-3 mb-3">
+                  <div className="w-10 h-10 rounded-full bg-accent-light flex items-center justify-center flex-shrink-0 group-hover:bg-accent/15 transition-colors">
+                    <FolderKanban className="w-5 h-5 text-accent" />
+                  </div>
+                  <div className="min-w-0 -mt-3">
+                     <h3 className="text-2xl font-semibold text-text truncate group-hover:text-accent transition-colors">
+                      {p.name}
+                    </h3>
+                    {p.description && (
+                      <p className="text-md text-muted mt-0.5 line-clamp-2">{p.description}</p>
+                    )}
+                  </div>
                 </div>
-                <div className="min-w-0">
-                  <h3 className="text-sm font-semibold text-text truncate group-hover:text-accent transition-colors">
-                    {p.name}
-                  </h3>
-                  {p.description && (
-                    <p className="text-xs text-muted mt-0.5 line-clamp-2">{p.description}</p>
-                  )}
-                </div>
-              </div>
 
-              <div className="flex items-center gap-4 text-xs text-muted">
-                <span className="flex items-center gap-1">
-                  <GitMerge className="w-3 h-3" />
-                  {p.repos.length} repo{p.repos.length !== 1 ? 's' : ''}
-                </span>
-                <span className="flex items-center gap-1">
-                  <Clock className="w-3 h-3" />
-                  {timeAgo(p.updatedAt)}
-                </span>
-              </div>
-
-              {/* Tech stack tags from repos */}
-              {p.repos.length > 0 && (
-                <div className="flex flex-wrap gap-1 mt-3">
-                  {[...new Set(p.repos.flatMap((r) => r.techStack))].slice(0, 5).map((tech) => (
-                    <span
-                      key={tech}
-                      className="px-1.5 py-0.5 rounded text-[10px] bg-hover text-muted font-medium"
-                    >
-                      {tech}
-                    </span>
-                  ))}
+                <div className="flex items-center gap-4 text-md text-muted">
+                  <span className="flex items-center gap-1">
+                    <GitMerge className="w-3 h-3" />
+                    {p.repos.length} repo{p.repos.length !== 1 ? 's' : ''}
+                  </span>
+                  <span className="flex items-center gap-1">
+                    <Clock className="w-3 h-3" />
+                    {timeAgo(p.updatedAt)}
+                  </span>
                 </div>
-              )}
-            </Link>
+
+                {p.repos.length > 0 && (
+                  <div className="flex flex-wrap gap-1 mt-3">
+                    {[...new Set(p.repos.flatMap((r) => r.techStack))].slice(0, 5).map((tech) => (
+                      <span
+                        key={tech}
+                        className="px-3 py-1 rounded-full text-sm bg-hover text-muted font-medium"
+                      >
+                        {tech}
+                      </span>
+                    ))}
+                  </div>
+                )}
+              </Link>
+            </div>
           ))}
         </div>
       )}

@@ -1,7 +1,7 @@
 import { jsx as _jsx, jsxs as _jsxs, Fragment as _Fragment } from "react/jsx-runtime";
 import { useEffect, useState } from 'react';
 import { useParams, Link } from 'react-router-dom';
-import { ArrowLeft, FolderKanban, GitBranch, Clock, ScanSearch, Network, Loader2, Calendar, Hash, Tag, GitMerge, Plus, X, Check, ChevronDown, } from 'lucide-react';
+import { ArrowLeft, FolderKanban, GitBranch, Clock, ScanSearch, Network, Loader2, Calendar, Hash, Tag, GitMerge, Plus, X, Check, ChevronDown, Plug, } from 'lucide-react';
 import { api } from '../api.ts';
 import { cn } from '../lib/utils.ts';
 import { timeAgo, formatDate, formatDuration, slugify } from '../lib/helpers.ts';
@@ -131,6 +131,8 @@ export function Project() {
     const [scanning, setScanning] = useState({});
     const [scanningAll, setScanningAll] = useState(false);
     const [showAddRepo, setShowAddRepo] = useState(false);
+    const [connCheck, setConnCheck] = useState('idle');
+    const [connError, setConnError] = useState(null);
     useEffect(() => {
         if (!id)
             return;
@@ -207,6 +209,22 @@ export function Project() {
             console.error('Scan failed:', err);
         }
     };
+    const handleCheckConnection = async () => {
+        if (repos.length === 0)
+            return;
+        setConnCheck('checking');
+        setConnError(null);
+        try {
+            await Promise.all(repos.map((r) => api.getBranches(r.id)));
+            setConnCheck('ok');
+            setTimeout(() => setConnCheck('idle'), 3000);
+        }
+        catch (err) {
+            setConnCheck('error');
+            setConnError(err instanceof Error ? err.message : 'Connection failed');
+            setTimeout(() => setConnCheck('idle'), 5000);
+        }
+    };
     const handleScanAll = async () => {
         if (!id)
             return;
@@ -226,7 +244,13 @@ export function Project() {
     if (!project) {
         return (_jsx("div", { className: "flex items-center justify-center h-64", children: _jsxs("div", { className: "flex items-center gap-3 text-muted", children: [_jsx(Loader2, { className: "w-5 h-5 animate-spin" }), _jsx("span", { className: "text-sm", children: "Loading project..." })] }) }));
     }
-    return (_jsxs("div", { className: "space-y-6", children: [_jsxs(Link, { to: "/", className: "inline-flex items-center gap-1.5 text-sm text-muted hover:text-accent transition-colors", children: [_jsx(ArrowLeft, { className: "w-4 h-4" }), "Back to Overview"] }), _jsx("div", { className: "bg-card rounded-[var(--radius-lg)] shadow-[var(--shadow-md)] border border-[var(--color-border-light)] p-6", children: _jsxs("div", { className: "flex items-start justify-between gap-4 flex-wrap", children: [_jsxs("div", { className: "flex items-start gap-4", children: [_jsx("div", { className: "w-12 h-12 rounded-[var(--radius-lg)] bg-[color-mix(in_srgb,var(--color-accent)_10%,transparent)] flex items-center justify-center flex-shrink-0", children: _jsx(FolderKanban, { className: "w-6 h-6 text-accent" }) }), _jsxs("div", { children: [_jsx("h1", { className: "text-xl font-bold text-text", children: project.name }), project.description && (_jsx("p", { className: "text-sm text-muted mt-1", children: project.description })), _jsxs("div", { className: "flex items-center gap-4 mt-2 text-xs text-muted", children: [_jsxs("span", { className: "flex items-center gap-1", children: [_jsx(Calendar, { className: "w-3.5 h-3.5" }), "Created ", formatDate(project.createdAt)] }), _jsxs("span", { className: "flex items-center gap-1", children: [_jsx(GitMerge, { className: "w-3.5 h-3.5" }), repos.length, " ", repos.length === 1 ? 'repo' : 'repos'] })] })] })] }), _jsxs("div", { className: "flex items-center gap-2", children: [_jsxs("button", { onClick: () => setShowAddRepo(true), className: "inline-flex items-center gap-2 px-4 py-2 rounded-[var(--radius-md)] text-sm font-medium border border-[var(--color-border)] text-text hover:bg-[var(--color-hover)] transition-colors", children: [_jsx(Plus, { className: "w-4 h-4" }), "Add Repo"] }), _jsxs("button", { onClick: handleScanAll, disabled: scanningAll || repos.length === 0, className: cn('inline-flex items-center gap-2 px-4 py-2 rounded-[var(--radius-md)] text-sm font-medium transition-colors', scanningAll || repos.length === 0
+    return (_jsxs("div", { className: "space-y-6", children: [_jsxs(Link, { to: "/", className: "inline-flex items-center gap-1.5 text-sm text-muted hover:text-accent transition-colors", children: [_jsx(ArrowLeft, { className: "w-4 h-4" }), "Back to Overview"] }), _jsx("div", { className: "bg-card rounded-[var(--radius-lg)] shadow-[var(--shadow-md)] border border-[var(--color-border-light)] p-6", children: _jsxs("div", { className: "flex items-start justify-between gap-4 flex-wrap", children: [_jsxs("div", { className: "flex items-start gap-4", children: [_jsx("div", { className: "w-12 h-12 rounded-[var(--radius-lg)] bg-[color-mix(in_srgb,var(--color-accent)_10%,transparent)] flex items-center justify-center flex-shrink-0", children: _jsx(FolderKanban, { className: "w-6 h-6 text-accent" }) }), _jsxs("div", { children: [_jsx("h1", { className: "text-xl font-bold text-text", children: project.name }), project.description && (_jsx("p", { className: "text-sm text-muted mt-1", children: project.description })), _jsxs("div", { className: "flex items-center gap-4 mt-2 text-xs text-muted", children: [_jsxs("span", { className: "flex items-center gap-1", children: [_jsx(Calendar, { className: "w-3.5 h-3.5" }), "Created ", formatDate(project.createdAt)] }), _jsxs("span", { className: "flex items-center gap-1", children: [_jsx(GitMerge, { className: "w-3.5 h-3.5" }), repos.length, " ", repos.length === 1 ? 'repo' : 'repos'] })] })] })] }), _jsxs("div", { className: "flex items-center gap-2", children: [_jsxs("button", { onClick: handleCheckConnection, disabled: connCheck === 'checking' || repos.length === 0, title: connError ?? undefined, className: cn('inline-flex items-center gap-2 px-4 py-2 rounded-[var(--radius-md)] text-sm font-medium border transition-colors', connCheck === 'checking'
+                                        ? 'border-[var(--color-border)] text-muted cursor-not-allowed'
+                                        : connCheck === 'ok'
+                                            ? 'border-success/30 bg-success/10 text-success'
+                                            : connCheck === 'error'
+                                                ? 'border-error/30 bg-error/10 text-error'
+                                                : 'border-[var(--color-border)] text-text hover:bg-[var(--color-hover)]'), children: [connCheck === 'checking' ? (_jsx(Loader2, { className: "w-4 h-4 animate-spin" })) : connCheck === 'ok' ? (_jsx(Check, { className: "w-4 h-4" })) : (_jsx(Plug, { className: "w-4 h-4" })), connCheck === 'checking' ? 'Checking...' : connCheck === 'ok' ? 'Connected' : connCheck === 'error' ? 'Failed' : 'Check Connection'] }), _jsxs("button", { onClick: () => setShowAddRepo(true), className: "inline-flex items-center gap-2 px-4 py-2 rounded-[var(--radius-md)] text-sm font-medium border border-[var(--color-border)] text-text hover:bg-[var(--color-hover)] transition-colors", children: [_jsx(Plus, { className: "w-4 h-4" }), "Add Repo"] }), _jsxs("button", { onClick: handleScanAll, disabled: scanningAll || repos.length === 0, className: cn('inline-flex items-center gap-2 px-4 py-2 rounded-[var(--radius-md)] text-sm font-medium transition-colors', scanningAll || repos.length === 0
                                         ? 'bg-[var(--color-hover)] text-muted cursor-not-allowed'
                                         : 'bg-accent text-white hover:bg-[var(--color-accent-hover)] shadow-[var(--shadow-sm)]'), children: [scanningAll ? _jsx(Loader2, { className: "w-4 h-4 animate-spin" }) : _jsx(ScanSearch, { className: "w-4 h-4" }), scanningAll ? 'Scanning...' : 'Scan All Repos'] }), _jsxs(Link, { to: `/graph/${id}`, className: "inline-flex items-center gap-2 px-4 py-2 rounded-[var(--radius-md)] text-sm font-medium border border-[var(--color-border)] text-text hover:bg-[var(--color-hover)] transition-colors", children: [_jsx(Network, { className: "w-4 h-4" }), "View Graph"] })] })] }) }), _jsx(ProjectLinksPanel, { projectId: id }), _jsxs("div", { className: "bg-card rounded-[var(--radius-lg)] shadow-[var(--shadow-md)] border border-[var(--color-border-light)] overflow-hidden", children: [_jsxs("div", { className: "px-6 py-4 border-b border-[var(--color-border-light)] flex items-center justify-between", children: [_jsx("h2", { className: "text-sm font-semibold text-text", children: "Repositories" }), _jsxs("span", { className: "text-xs text-muted", children: [repos.length, " repos"] })] }), repos.length === 0 ? (_jsx("div", { className: "px-6 py-10 text-center text-sm text-muted", children: "No repositories found" })) : (_jsx("div", { className: "grid grid-cols-1 md:grid-cols-2 gap-4 p-4", children: repos.map((repo) => (_jsxs("div", { className: "rounded-[var(--radius-md)] border border-[var(--color-border-light)] p-4 hover:border-accent/30 hover:shadow-[var(--shadow-sm)] transition-all", children: [_jsxs("div", { className: "flex items-start justify-between gap-3 mb-3", children: [_jsxs("div", { className: "min-w-0", children: [_jsx("p", { className: "text-sm font-semibold text-text truncate", children: repo.name }), _jsxs("div", { className: "flex items-center gap-2 mt-1 flex-wrap", children: [_jsx(ProviderBadge, { provider: repo.provider }), _jsx(BranchSelector, { repo: repo, onBranchChanged: (repoId, branch) => setRepos((prev) => prev.map((r) => r.id === repoId ? { ...r, defaultBranch: branch } : r)) })] })] }), _jsx("button", { onClick: () => handleScanRepo(repo.id), disabled: !!scanning[repo.id], className: cn('inline-flex items-center gap-1.5 px-3 py-1.5 rounded-[var(--radius-sm)] text-xs font-semibold transition-colors flex-shrink-0', scanning[repo.id]
                                                 ? 'bg-[var(--color-hover)] text-muted cursor-not-allowed'

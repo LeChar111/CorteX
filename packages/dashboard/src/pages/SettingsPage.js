@@ -48,7 +48,6 @@ export function SettingsPage() {
     const envVars = [
         { key: 'DATABASE_URL', value: 'postgresql://cortex:***@localhost:5432/cortex', sensitive: true, category: 'database' },
         { key: 'REDIS_URL', value: 'redis://localhost:6379', sensitive: false, category: 'cache' },
-        { key: 'LIGHTRAG_URL', value: 'http://localhost:9621', sensitive: false, category: 'service' },
         { key: 'CORTEX_LLM_MODEL', value: 'haiku', sensitive: false, category: 'ai' },
         { key: 'OLLAMA_LLM_MODEL', value: 'qwen2.5:7b', sensitive: false, category: 'ai' },
         { key: 'OLLAMA_CHAT_MODEL', value: 'qwen3.5:9b', sensitive: false, category: 'ai' },
@@ -174,10 +173,9 @@ export function SettingsPage() {
                                     { label: 'Architecture', value: 'Hybrid RAG' },
                                     { label: 'Code Extraction', value: 'Claude Haiku (CLI)' },
                                     { label: 'Embeddings', value: 'nomic-embed-text' },
-                                    { label: 'LightRAG LLM', value: 'qwen2.5:7b (Ollama)' },
                                     { label: 'Chat LLM', value: 'qwen3.5:9b (Ollama)' },
                                     { label: 'Database', value: 'PostgreSQL 16 + pgvector' },
-                                    { label: 'Graph RAG', value: 'LightRAG' },
+                                    { label: 'Graph Engine', value: 'graphify + PostgreSQL' },
                                     { label: 'MCP Protocol', value: '12 tools (stdio)' },
                                 ].map(({ label, value, mono }) => (_jsxs("div", { className: "flex items-center justify-between py-2 border-b border-border-light/50 last:border-0", children: [_jsx("span", { className: "text-xs text-light font-medium", children: label }), _jsx("span", { className: cn('text-xs text-text font-semibold', mono && 'font-mono'), children: value })] }, label))) }), _jsx("div", { className: "mt-6 p-4 rounded-xl bg-accent-light/50 border border-accent/10", children: _jsxs("div", { className: "flex items-start gap-3", children: [_jsx(User, { className: "w-5 h-5 text-accent flex-shrink-0 mt-0.5" }), _jsxs("div", { children: [_jsx("p", { className: "text-xs font-semibold text-text", children: "Multi-User Support" }), _jsx("p", { className: "text-xs text-muted mt-0.5", children: "Up to 5 concurrent users via API keys. Real-time sync through WebSocket + pg_notify. Each MCP client connects via stdio and shares the same backend." })] })] }) })] })] })] }));
 }

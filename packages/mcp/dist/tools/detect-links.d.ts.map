@@ -1,0 +1,1 @@
+{"version":3,"file":"detect-links.d.ts","sourceRoot":"","sources":["../../src/tools/detect-links.ts"],"names":[],"mappings":"AAAA,OAAO,KAAK,EAAE,YAAY,EAAE,MAAM,cAAc,CAAC;AACjD,OAAO,KAAK,EAAE,eAAe,EAAE,MAAM,gBAAgB,CAAC;AAEtD,eAAO,MAAM,eAAe;;;;;;;;;;;;;;;;;;;;;kBAiBlB,MAAM,CAAC,MAAM,EAAE,OAAO,CAAC,UACrB,YAAY,aACT,eAAe,GAAG,IAAI,GAChC,OAAO,CAAC,MAAM,CAAC;CAmEnB,CAAC"}

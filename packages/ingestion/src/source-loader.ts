@@ -104,9 +104,9 @@ export async function discoverFiles(
   const results: SourceFile[] = [];
 
   async function walk(dirPath: string): Promise<void> {
-    let entries: Awaited<ReturnType<typeof readdir>>;
+    let entries: import('fs').Dirent[];
     try {
-      entries = await readdir(dirPath, { withFileTypes: true });
+      entries = await readdir(dirPath, { withFileTypes: true, encoding: 'utf-8' }) as import('fs').Dirent[];
     } catch {
       return;
     }

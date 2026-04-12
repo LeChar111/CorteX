@@ -33,7 +33,7 @@ export const queryTool = {
       [k: string]: unknown;
     };
 
-    // LightRAG returns a 'response' field with the text answer
+    // The API returns a 'response' field with the text answer
     if (result.response && typeof result.response === 'string') {
       return result.response;
     }

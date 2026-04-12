@@ -1,34 +1,19 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
-import { getDb, getProjectById, listReposByProject } from '@cortex/db';
-import { LightRAGClient } from '../../lightrag/client.js';
+import {
+  getDb,
+  getProjectById,
+  getGraphForProject,
+  getGraphFull,
+  getCommunitiesForProject,
+} from '@cortex/db';
 
 export const analysisRoutes = new Hono();
 
-// Helper: extract properties from a graph node (LightRAG nests data in properties)
+// Helper: flatten node properties for backward compat
 function nodeProps(n: Record<string, unknown>): Record<string, unknown> {
   const props = (n.properties ?? {}) as Record<string, unknown>;
   return { ...n, ...props };
-}
-
-// Helper: build a set of keywords to match nodes to a project
-// Uses repo names + slugs which appear in file paths and descriptions
-async function getProjectKeywords(projectId: string): Promise<string[]> {
-  const db = getDb();
-  const repos = await listReposByProject(db, projectId);
-  const keywords: string[] = [];
-  for (const r of repos) {
-    keywords.push(r.name.toLowerCase());
-    if (r.slug && r.slug !== r.name) keywords.push(r.slug.toLowerCase());
-  }
-  return keywords;
-}
-
-// Helper: check if a node belongs to a project (by matching keywords in description/source)
-function nodeMatchesProject(n: Record<string, unknown>, keywords: string[]): boolean {
-  const p = nodeProps(n);
-  const text = `${String(p.description ?? '')} ${String(p.source_id ?? '')} ${String(p.file_path ?? '')}`.toLowerCase();
-  return keywords.some((kw) => text.includes(kw));
 }
 
 // ── POST /analysis/impact ──────────────────────────────────────────────
@@ -40,10 +25,11 @@ const ImpactSchema = z.object({
 
 analysisRoutes.post('/analysis/impact', async (c) => {
   const data = ImpactSchema.parse(await c.req.json());
-  const lightragUrl = process.env['LIGHTRAG_URL'] ?? 'http://localhost:9621';
-  const client = new LightRAGClient(lightragUrl);
+  const db = getDb();
 
-  const graph = await client.getGraphFull().catch(() => ({ nodes: [], edges: [] }));
+  const graph = data.projectId
+    ? await getGraphForProject(db, data.projectId).catch(() => ({ nodes: [], edges: [] }))
+    : await getGraphFull(db).catch(() => ({ nodes: [], edges: [] }));
 
   const directImpact: Array<{ entity: string; file: string; project: string; type: string }> = [];
   const transitiveImpact: Array<{ entity: string; file: string; project: string; depth: number }> = [];
@@ -54,43 +40,96 @@ analysisRoutes.post('/analysis/impact', async (c) => {
 
   // Find nodes matching the file path
   const fileNodes = allNodes.filter((n) => {
-    const p = nodeProps(n);
-    const desc = String(p.description ?? '');
-    const name = String(p.entity_name ?? p.entity_id ?? n.id ?? '');
-    return desc.includes(data.filePath) || name.includes(data.filePath);
+    const sourceFile = String(n.sourceFile ?? n.source_file ?? '');
+    const label = String(n.label ?? '');
+    return sourceFile.includes(data.filePath) || label.includes(data.filePath);
   });
 
+  const currentProjectId = data.projectId;
+
   for (const node of fileNodes) {
-    const p = nodeProps(node);
     directImpact.push({
-      entity: String(p.entity_name ?? p.entity_id ?? node.id ?? 'unknown'),
+      entity: String(node.label ?? node.id ?? 'unknown'),
       file: data.filePath,
-      project: String(p.source_id ?? 'unknown').slice(0, 40),
-      type: String(p.entity_type ?? 'unknown'),
+      project: String(node.projectId ?? node.project_id ?? 'unknown'),
+      type: String(node.type ?? 'unknown'),
     });
   }
 
-  // 1-hop connections
+  // BFS: 1-hop and 2-hop connections
   const fileNodeIds = new Set(fileNodes.map((n) => String(n.id ?? '')));
+  const visited = new Set<string>(fileNodeIds);
+
+  // Hop 1: direct connections
   const hop1Edges = allEdges.filter(
-    (e) => fileNodeIds.has(String(e.source ?? '')) || fileNodeIds.has(String(e.target ?? '')),
+    (e) => fileNodeIds.has(String(e.sourceNodeId ?? e.source_node_id ?? '')) ||
+           fileNodeIds.has(String(e.targetNodeId ?? e.target_node_id ?? '')),
   );
   const hop1Ids = new Set<string>();
 
   for (const edge of hop1Edges) {
-    const src = String(edge.source ?? '');
-    const tgt = String(edge.target ?? '');
+    const src = String(edge.sourceNodeId ?? edge.source_node_id ?? '');
+    const tgt = String(edge.targetNodeId ?? edge.target_node_id ?? '');
     const otherId = fileNodeIds.has(src) ? tgt : src;
-    if (!fileNodeIds.has(otherId) && !hop1Ids.has(otherId)) {
+    if (!visited.has(otherId)) {
+      visited.add(otherId);
       hop1Ids.add(otherId);
       const node = allNodes.find((n) => String(n.id ?? '') === otherId);
-      const p = node ? nodeProps(node) : {};
-      transitiveImpact.push({
-        entity: String(p.entity_name ?? p.entity_id ?? otherId),
-        file: String(p.description ?? 'unknown').slice(0, 100),
-        project: String(p.source_id ?? 'unknown').slice(0, 40),
-        depth: 1,
-      });
+
+      const isExternal = currentProjectId && node
+        ? String(node.projectId ?? node.project_id ?? '') !== currentProjectId
+        : false;
+
+      if (isExternal && node) {
+        crossProjectImpact.push({
+          entity: String(node.label ?? otherId),
+          file: String(node.sourceFile ?? node.source_file ?? 'unknown'),
+          project: String(node.projectId ?? node.project_id ?? 'unknown'),
+        });
+      } else {
+        const p = node ? nodeProps(node) : {};
+        transitiveImpact.push({
+          entity: String(node?.label ?? otherId),
+          file: String(p.sourceFile ?? p.source_file ?? 'unknown'),
+          project: String(node?.projectId ?? node?.project_id ?? 'unknown'),
+          depth: 1,
+        });
+      }
+    }
+  }
+
+  // Hop 2: transitive connections
+  const hop2Edges = allEdges.filter(
+    (e) => hop1Ids.has(String(e.sourceNodeId ?? e.source_node_id ?? '')) ||
+           hop1Ids.has(String(e.targetNodeId ?? e.target_node_id ?? '')),
+  );
+
+  for (const edge of hop2Edges) {
+    const src = String(edge.sourceNodeId ?? edge.source_node_id ?? '');
+    const tgt = String(edge.targetNodeId ?? edge.target_node_id ?? '');
+    const otherId = hop1Ids.has(src) ? tgt : src;
+    if (!visited.has(otherId)) {
+      visited.add(otherId);
+      const node = allNodes.find((n) => String(n.id ?? '') === otherId);
+
+      const isExternal = currentProjectId && node
+        ? String(node.projectId ?? node.project_id ?? '') !== currentProjectId
+        : false;
+
+      if (isExternal && node) {
+        crossProjectImpact.push({
+          entity: String(node.label ?? otherId),
+          file: String(node.sourceFile ?? node.source_file ?? 'unknown'),
+          project: String(node.projectId ?? node.project_id ?? 'unknown'),
+        });
+      } else {
+        transitiveImpact.push({
+          entity: String(node?.label ?? otherId),
+          file: String(node?.sourceFile ?? node?.source_file ?? 'unknown'),
+          project: String(node?.projectId ?? node?.project_id ?? 'unknown'),
+          depth: 2,
+        });
+      }
     }
   }
 
@@ -99,7 +138,7 @@ analysisRoutes.post('/analysis/impact', async (c) => {
     directImpact,
     transitiveImpact,
     crossProjectImpact,
-    rawAnalysis: `Graph analysis: ${directImpact.length} direct entities, ${transitiveImpact.length} transitive impacts found.`,
+    rawAnalysis: `Graph analysis: ${directImpact.length} direct entities, ${transitiveImpact.length} transitive impacts, ${crossProjectImpact.length} cross-project impacts found.`,
   });
 });
 
@@ -110,25 +149,19 @@ const DriftSchema = z.object({ projectId: z.string().uuid() });
 analysisRoutes.post('/analysis/drift', async (c) => {
   const data = DriftSchema.parse(await c.req.json());
   const db = getDb();
-  const lightragUrl = process.env['LIGHTRAG_URL'] ?? 'http://localhost:9621';
-  const client = new LightRAGClient(lightragUrl);
 
   const project = await getProjectById(db, data.projectId);
   if (!project) return c.json({ error: 'Project not found' }, 404);
 
-  const keywords = await getProjectKeywords(data.projectId);
-  const graph = await client.getGraphFull().catch(() => ({ nodes: [], edges: [] }));
-
-  const allNodes = graph.nodes as Array<Record<string, unknown>>;
-  const projectNodes = keywords.length > 0
-    ? allNodes.filter((n) => nodeMatchesProject(n, keywords))
-    : allNodes; // if no repos, show all
+  const graph = await getGraphForProject(db, data.projectId).catch(() => ({
+    nodes: [] as Array<Record<string, unknown>>,
+    edges: [] as Array<Record<string, unknown>>,
+  }));
 
   // Group entities by type
   const typeCounts: Record<string, number> = {};
-  for (const n of projectNodes) {
-    const p = nodeProps(n);
-    const t = String(p.entity_type ?? 'unknown');
+  for (const n of graph.nodes) {
+    const t = String((n as Record<string, unknown>).type ?? 'unknown');
     typeCounts[t] = (typeCounts[t] ?? 0) + 1;
   }
   const summary = Object.entries(typeCounts)
@@ -140,16 +173,13 @@ analysisRoutes.post('/analysis/drift', async (c) => {
     projectId: data.projectId,
     projectName: project.name,
     currentState: {
-      entityCount: projectNodes.length,
-      entities: projectNodes.slice(0, 50).map((n) => {
-        const p = nodeProps(n);
-        return {
-          name: String(p.entity_name ?? p.entity_id ?? n.id ?? ''),
-          type: String(p.entity_type ?? 'unknown'),
-        };
-      }),
+      entityCount: graph.nodes.length,
+      entities: graph.nodes.slice(0, 50).map((n) => ({
+        name: String((n as Record<string, unknown>).label ?? (n as Record<string, unknown>).id ?? ''),
+        type: String((n as Record<string, unknown>).type ?? 'unknown'),
+      })),
     },
-    analysis: `Project ${project.name} graph contains ${projectNodes.length} entities: ${summary}.`,
+    analysis: `Project ${project.name} graph contains ${graph.nodes.length} entities: ${summary}.`,
     timestamp: new Date().toISOString(),
   });
 });
@@ -164,42 +194,38 @@ analysisRoutes.get('/analysis/dead-code', async (c) => {
   const project = await getProjectById(db, projectId);
   if (!project) return c.json({ error: 'Project not found' }, 404);
 
-  const keywords = await getProjectKeywords(projectId);
-  const lightragUrl = process.env['LIGHTRAG_URL'] ?? 'http://localhost:9621';
-  const client = new LightRAGClient(lightragUrl);
-
-  const graph = await client.getGraphFull().catch(() => ({ nodes: [], edges: [] }));
-  const allNodes = graph.nodes as Array<Record<string, unknown>>;
-  const edges = graph.edges as Array<Record<string, unknown>>;
-
-  const projectNodes = keywords.length > 0
-    ? allNodes.filter((n) => nodeMatchesProject(n, keywords))
-    : allNodes;
+  const graph = await getGraphForProject(db, projectId).catch(() => ({
+    nodes: [] as Array<Record<string, unknown>>,
+    edges: [] as Array<Record<string, unknown>>,
+  }));
 
   // Find nodes with zero incoming edges
-  const targetIds = new Set(edges.map((e) => String(e.target ?? '')));
-  const unreferenced = projectNodes.filter(
-    (n) => !targetIds.has(String(n.id ?? '')),
+  const targetIds = new Set(graph.edges.map((e) => String((e as Record<string, unknown>).targetNodeId ?? (e as Record<string, unknown>).target_node_id ?? '')));
+  const unreferenced = graph.nodes.filter(
+    (n) => !targetIds.has(String((n as Record<string, unknown>).id ?? '')),
   );
 
-  // Filter out entry points
+  // Filter out entry points and non-code entities
   const entryPatterns = /^(main|index|app|server|worker|export)/i;
+  const nonCodeTypes = new Set(['dependency', 'env_variable', 'container', 'port', 'pipeline']);
   const deadCode = unreferenced.filter((n) => {
-    const p = nodeProps(n);
-    return !entryPatterns.test(String(p.entity_name ?? p.entity_id ?? ''));
+    const nr = n as Record<string, unknown>;
+    const entityType = String(nr.type ?? '').toLowerCase();
+    if (nonCodeTypes.has(entityType)) return false;
+    return !entryPatterns.test(String(nr.label ?? ''));
   });
 
   return c.json({
     unreferencedEntities: deadCode.slice(0, 100).map((n) => {
-      const p = nodeProps(n);
+      const nr = n as Record<string, unknown>;
       return {
-        name: String(p.entity_name ?? p.entity_id ?? n.id ?? ''),
-        type: String(p.entity_type ?? 'unknown'),
-        file: String(p.description ?? '').slice(0, 200),
+        name: String(nr.label ?? nr.id ?? ''),
+        type: String(nr.type ?? 'unknown'),
+        file: String(nr.sourceFile ?? nr.source_file ?? ''),
       };
     }),
     count: deadCode.length,
-    totalEntities: projectNodes.length,
+    totalEntities: graph.nodes.length,
   });
 });
 
@@ -213,42 +239,40 @@ analysisRoutes.get('/analysis/health-score', async (c) => {
   const project = await getProjectById(db, projectId);
   if (!project) return c.json({ error: 'Project not found' }, 404);
 
-  const keywords = await getProjectKeywords(projectId);
-  const lightragUrl = process.env['LIGHTRAG_URL'] ?? 'http://localhost:9621';
-  const client = new LightRAGClient(lightragUrl);
+  const graph = await getGraphForProject(db, projectId).catch(() => ({
+    nodes: [] as Array<Record<string, unknown>>,
+    edges: [] as Array<Record<string, unknown>>,
+  }));
 
-  const graph = await client.getGraphFull().catch(() => ({ nodes: [], edges: [] }));
-  const allNodes = graph.nodes as Array<Record<string, unknown>>;
-  const allEdges = graph.edges as Array<Record<string, unknown>>;
+  // Get full graph for cross-project edge detection
+  const fullGraph = await getGraphFull(db).catch(() => ({
+    nodes: [] as Array<Record<string, unknown>>,
+    edges: [] as Array<Record<string, unknown>>,
+  }));
 
-  const projectNodes = keywords.length > 0
-    ? allNodes.filter((n) => nodeMatchesProject(n, keywords))
-    : allNodes;
+  const projectNodeIds = new Set(graph.nodes.map((n) => String((n as Record<string, unknown>).id ?? '')));
+  const totalNodes = graph.nodes.length;
 
-  const projectNodeIds = new Set(projectNodes.map((n) => String(n.id ?? '')));
-  const projectEdges = allEdges.filter(
-    (e) => projectNodeIds.has(String(e.source ?? '')) || projectNodeIds.has(String(e.target ?? '')),
-  );
-
-  const totalNodes = projectNodes.length;
-  const targetIds = new Set(projectEdges.map((e) => String(e.target ?? '')));
-  const orphanCount = projectNodes.filter(
-    (n) => !targetIds.has(String(n.id ?? '')),
+  const targetIds = new Set(graph.edges.map((e) => String((e as Record<string, unknown>).targetNodeId ?? (e as Record<string, unknown>).target_node_id ?? '')));
+  const orphanCount = graph.nodes.filter(
+    (n) => !targetIds.has(String((n as Record<string, unknown>).id ?? '')),
   ).length;
   const orphanRatio = totalNodes > 0 ? Math.round((orphanCount / totalNodes) * 100) : 0;
 
-  const externalEdges = projectEdges.filter((e) => {
-    const src = String(e.source ?? '');
-    const tgt = String(e.target ?? '');
+  // Cross-project edges
+  const allEdges = fullGraph.edges as Array<Record<string, unknown>>;
+  const externalEdges = allEdges.filter((e) => {
+    const src = String(e.sourceNodeId ?? e.source_node_id ?? '');
+    const tgt = String(e.targetNodeId ?? e.target_node_id ?? '');
     return (projectNodeIds.has(src) && !projectNodeIds.has(tgt)) ||
            (!projectNodeIds.has(src) && projectNodeIds.has(tgt));
   });
   const crossProjectCoupling = totalNodes > 0
-    ? Math.round((externalEdges.length / Math.max(projectEdges.length, 1)) * 100)
+    ? Math.round((externalEdges.length / Math.max(graph.edges.length, 1)) * 100)
     : 0;
 
   const graphCoverage = totalNodes > 0
-    ? Math.min(100, Math.round((projectEdges.length / totalNodes) * 50))
+    ? Math.min(100, Math.round((graph.edges.length / totalNodes) * 50))
     : 0;
 
   const score = Math.max(0, Math.min(100,
@@ -263,14 +287,75 @@ analysisRoutes.get('/analysis/health-score', async (c) => {
     breakdown: {
       graphCoverage,
       orphanRatio,
-      cyclomaticComplexity: Math.round((projectEdges.length / Math.max(totalNodes, 1)) * 10),
+      cyclomaticComplexity: Math.round((graph.edges.length / Math.max(totalNodes, 1)) * 10),
       crossProjectCoupling,
     },
     stats: {
       totalEntities: totalNodes,
-      totalRelations: projectEdges.length,
+      totalRelations: graph.edges.length,
       orphanEntities: orphanCount,
       externalRelations: externalEdges.length,
     },
   });
+});
+
+// ── GET /analysis/communities ──────────────────────────────────────────
+
+analysisRoutes.get('/analysis/communities', async (c) => {
+  const projectId = c.req.query('projectId');
+  if (!projectId) return c.json({ error: 'projectId required' }, 400);
+
+  const db = getDb();
+  const project = await getProjectById(db, projectId);
+  if (!project) return c.json({ error: 'Project not found' }, 404);
+
+  const communities = await getCommunitiesForProject(db, projectId);
+  return c.json({
+    projectId,
+    projectName: project.name,
+    communities,
+    count: communities.length,
+  });
+});
+
+// ── GET /analysis/god-nodes ────────────────────────────────────────────
+
+analysisRoutes.get('/analysis/god-nodes', async (c) => {
+  const projectId = c.req.query('projectId');
+  if (!projectId) return c.json({ error: 'projectId required' }, 400);
+
+  const db = getDb();
+  const communities = await getCommunitiesForProject(db, projectId);
+
+  const godNodes = communities.flatMap((comm) => {
+    const gods = (comm.godNodes ?? []) as Array<Record<string, unknown>>;
+    return gods.map((g) => ({
+      ...g,
+      communityId: comm.id,
+      communityIndex: comm.communityIndex,
+    }));
+  });
+
+  return c.json({ projectId, godNodes, count: godNodes.length });
+});
+
+// ── GET /analysis/surprising-connections ───────────────────────────────
+
+analysisRoutes.get('/analysis/surprising-connections', async (c) => {
+  const projectId = c.req.query('projectId');
+  if (!projectId) return c.json({ error: 'projectId required' }, 400);
+
+  const db = getDb();
+  const communities = await getCommunitiesForProject(db, projectId);
+
+  const surprisingConnections = communities.flatMap((comm) => {
+    const connections = (comm.surprisingConnections ?? []) as Array<Record<string, unknown>>;
+    return connections.map((sc) => ({
+      ...sc,
+      communityId: comm.id,
+      communityIndex: comm.communityIndex,
+    }));
+  });
+
+  return c.json({ projectId, surprisingConnections, count: surprisingConnections.length });
 });

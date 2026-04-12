@@ -15,9 +15,12 @@
   "dependencies": {
     "@anthropic-ai/sdk": "^0.82.0",
     "@cortex/db": "workspace:*",
+    "@cortex/shared": "workspace:*",
     "@hono/node-server": "^1.14.0",
     "@hono/node-ws": "^1.1.0",
+    "assistant-stream": "^0.3.10",
     "bullmq": "^5.73.0",
+    "drizzle-orm": "^0.38.4",
     "hono": "^4.7.0",
     "ioredis": "^5.10.1",
     "pg": "^8.20.0",

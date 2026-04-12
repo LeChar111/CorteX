@@ -1,5 +1,5 @@
 import Anthropic from '@anthropic-ai/sdk';
-import { LightRAGClient } from '../../lightrag/client.js';
+import { getDb, searchGraphNodes, getGraphAroundEntity } from '@cortex/db';
 import type { EngineInput, SSEWriter } from '../types.js';
 
 const MODEL = 'claude-haiku-4-5-20251001';
@@ -13,50 +13,59 @@ function getClient(): Anthropic {
   return client;
 }
 
-const lightragUrl = () => process.env['LIGHTRAG_URL'] ?? 'http://localhost:9621';
-
 const tools: Anthropic.Tool[] = [
   {
     name: 'query_knowledge',
-    description: 'Search the knowledge base with a natural language query. Use modes: "mix" for balanced, "naive" for fast fulltext, "local" for semantic, "global" for graph traversal.',
+    description: 'Search the knowledge graph with a natural language query. Returns matching entities and their relationships.',
     input_schema: {
       type: 'object' as const,
       properties: {
         query: { type: 'string', description: 'The search query' },
-        mode: { type: 'string', enum: ['mix', 'naive', 'local', 'global'], description: 'Search mode' },
+        limit: { type: 'number', description: 'Max results (default 20)' },
       },
       required: ['query'],
     },
   },
   {
     name: 'search_entities',
-    description: 'Get the knowledge graph structure to find entities and their relationships.',
+    description: 'Get the knowledge graph structure around an entity to find its relationships.',
     input_schema: {
       type: 'object' as const,
       properties: {
-        label: { type: 'string', description: 'Entity label filter, or * for all' },
+        label: { type: 'string', description: 'Entity label to explore' },
+        depth: { type: 'number', description: 'Graph traversal depth (default 1)' },
       },
-      required: [],
+      required: ['label'],
     },
   },
 ];
 
 async function executeTool(name: string, input: Record<string, unknown>): Promise<string> {
-  const rag = new LightRAGClient(lightragUrl());
+  const db = getDb();
 
   switch (name) {
     case 'query_knowledge': {
-      const mode = (input.mode as 'mix' | 'naive' | 'local' | 'global') ?? 'mix';
       try {
-        return await rag.query(input.query as string, mode, 10_000);
+        const limit = (input.limit as number) ?? 20;
+        const nodes = await searchGraphNodes(db, input.query as string, undefined, limit);
+        if (nodes.length === 0) return 'No matching entities found.';
+        const summaries = nodes.map((n) => {
+          const props = (n.properties ?? {}) as Record<string, unknown>;
+          return `- **${n.label}** (${n.type})${n.sourceFile ? ` in \`${n.sourceFile}\`` : ''}: ${String(props.description ?? '')}`;
+        });
+        return `Found ${nodes.length} entities:\n${summaries.join('\n')}`;
       } catch {
-        return 'Knowledge base query timed out or failed.';
+        return 'Knowledge graph query failed.';
       }
     }
     case 'search_entities': {
       try {
-        const graph = await rag.getGraphs((input.label as string) ?? '*');
-        return JSON.stringify(graph).slice(0, 4000);
+        const depth = (input.depth as number) ?? 1;
+        const graph = await getGraphAroundEntity(db, input.label as string, depth);
+        return JSON.stringify({
+          nodes: graph.nodes.map((n) => ({ id: n.id, label: n.label, type: n.type })),
+          edges: graph.edges.map((e) => ({ source: e.sourceNodeId, target: e.targetNodeId, relation: e.relation })),
+        }).slice(0, 4000);
       } catch {
         return 'Graph query failed.';
       }
@@ -137,7 +146,7 @@ function buildSystemPrompt(context: string, projectName?: string): string {
     prompt += ` You are investigating the project "${projectName}".`;
   }
   if (context) {
-    prompt += `\n\nInitial context from knowledge base:\n${context}`;
+    prompt += `\n\nInitial context from knowledge graph:\n${context}`;
   }
   return prompt;
 }

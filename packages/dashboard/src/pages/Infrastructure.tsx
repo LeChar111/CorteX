@@ -13,36 +13,40 @@ import {
   CheckCircle2,
   AlertCircle,
   Clock,
-  Trash2,
   Settings,
   ChevronDown,
   ChevronUp,
-  ChevronRight,
+  Terminal,
 } from 'lucide-react';
 import { api } from '../api.ts';
 import { cn } from '../lib/utils.ts';
-import { timeAgo } from '../lib/helpers.ts';
+// timeAgo used in scan job display (future)
 import { DOCKER_SERVICES, ENV_VARS, SETUP_COMMANDS } from '../lib/config.ts';
 import { StatusDot } from '../components/StatusDot.tsx';
 import { CopyButton } from '../components/CopyButton.tsx';
 import { usePolling } from '../hooks/usePolling.ts';
 import { useAsyncData } from '../hooks/useAsyncData.ts';
+import { TerminalPage } from './TerminalPage';
 import type { ScanJob, Repo } from '../types.ts';
 
 interface ServiceData {
   status: string;
   latency?: number;
-  // LightRAG extras
-  pipelineBusy?: boolean;
-  documents?: Record<string, number>;
-  graphLabels?: number;
-  llmModel?: string;
-  embeddingModel?: string;
   version?: string;
   // Ollama extras
   models?: Array<{ name: string; size: string; vram?: string }>;
   available?: string[];
-  gpu?: { name: string; memoryUsed: string; memoryTotal: string; utilization: string; temperature: string };
+  gpu?: {
+    name: string;
+    type: 'discrete' | 'unified';
+    memoryUsed?: string;
+    memoryTotal?: string;
+    utilization?: string;
+    temperature?: string;
+    unifiedMemory?: string;
+    gpuCores?: string;
+    metalFamily?: string;
+  };
   running?: Array<{ name: string; size: string; vram: string; contextLength: number }>;
   // Claude extras
   model?: string;
@@ -78,10 +82,10 @@ export function Infrastructure() {
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
   const [restarting, setRestarting] = useState<string | null>(null);
   const [savingModel, setSavingModel] = useState(false);
-  const [savingLightrag, setSavingLightrag] = useState(false);
   const [loadingModel, setLoadingModel] = useState<string | null>(null);
-  const [expandedScan, setExpandedScan] = useState<string | null>(null);
+  const [_expandedScan, _setExpandedScan] = useState<string | null>(null);
   const [showAllModels, setShowAllModels] = useState(false);
+  const [showTerminal, setShowTerminal] = useState(false);
 
   // Centralized polling for health and scans
   const { data: health, loading, refetch: fetchHealth } = usePolling<HealthData>(
@@ -93,13 +97,13 @@ export function Infrastructure() {
     30_000,
   );
 
-  const { data: scanJobs, refetch: fetchScans } = usePolling<ScanJob[]>(
+  const { data: _scanJobs } = usePolling<ScanJob[]>(
     () => api.getScanStatus(),
     5_000,
   );
 
   // Build repo name lookup
-  const { data: repoMap } = useAsyncData(async () => {
+  const { data: _repoMap } = useAsyncData(async () => {
     const projects = await api.listProjects();
     const allRepos = await Promise.all(projects.map((p) => api.getRepos(p.id).catch(() => [] as Repo[])));
     const map: Record<string, string> = {};
@@ -178,6 +182,13 @@ export function Infrastructure() {
             Stop All
           </button>
           <button
+            onClick={() => setShowTerminal((value) => !value)}
+            className="flex items-center gap-2 rounded-full border border-border-light bg-card px-3 py-2 text-sm font-medium text-text hover:bg-hover transition-colors"
+          >
+            <Terminal className="h-4 w-4 text-muted" />
+            {showTerminal ? 'Hide Terminal' : 'Show Terminal'}
+          </button>
+          <button
             onClick={fetchHealth}
             className="flex items-center gap-2 rounded-full border border-border-light bg-card px-3 py-2 text-sm font-medium text-text hover:bg-hover transition-colors"
           >
@@ -187,23 +198,22 @@ export function Infrastructure() {
         </div>
       </div>
 
+      <div className={cn('overflow-hidden transition-all duration-300 ease-out', showTerminal ? 'max-h-[1200px] opacity-100' : 'max-h-0 opacity-0')}>
+        <div className={cn('pt-6', showTerminal ? 'opacity-100' : 'opacity-0')}> 
+          <TerminalPage hideHeader />
+        </div>
+      </div>
+
       <h1 className="text-4xl mt-10 font-bold text-text">Models configuration</h1>
           
       {/* ── AI Services Dashboard ── */}
       {(() => {
         const ollamaData = getServiceData(health, 'ollama');
-        const lightragData = getServiceData(health, 'lightrag');
         const claudeData = getServiceData(health, 'claude');
         const gpu = ollamaData?.gpu ?? null;
         const ollamaRunning = (ollamaData?.running ?? []) as Array<{ name: string; size: string; vram: string; processor: string; contextLength: number }>;
         const ollamaAvail = ((ollamaData?.available ?? []) as unknown) as Array<{ name: string; size: string; parameterSize: string }>;
         const ollamaRoles = (ollamaData?.roles ?? {}) as { llm?: string; chat?: string };
-        const docs = (lightragData?.documents ?? {}) as Record<string, number>;
-        const totalDocs: number = docs.all ?? 0;
-        const processedDocs: number = docs.processed ?? 0;
-        const pendingDocs: number = (docs.pending ?? 0) + (docs.processing ?? 0);
-        const failedDocs: number = docs.failed ?? 0;
-        const progressPct: number = totalDocs > 0 ? Math.round((processedDocs / totalDocs) * 100) : 0;
 
         const cardClass = 'bg-card rounded-[--radius-lg] border border-border-light shadow-sm overflow-hidden';
         const headerClass = 'flex items-center justify-between px-5 py-3 border-b border-border-light';
@@ -229,37 +239,73 @@ export function Infrastructure() {
                 <div className="p-5 space-y-4">
                   {/* GPU Card */}
                   {gpu ? (
-                    <div className="rounded-xl bg-gradient-to-br from-accent/5 to-transparent border border-accent/10 p-4">
-                      <div className="flex items-center justify-between mb-3">
-                        <p className="text-2xl font-semibold text-accent uppercase tracking-wide">GPU</p>
-                        <span className="text-3xl font-black text-muted">{gpu.temperature}</span>
-                      </div>
-                      <p className="text-md font-bold text-text">{gpu.name}</p>
-                      <div className="mt-3 space-y-2">
-                        <div>
-                          <div className="flex justify-between text-sm mb-1">
-                            <span className="text-muted">VRAM</span>
-                            <span className="font-mono text-text">{gpu.memoryUsed} / {gpu.memoryTotal}</span>
-                          </div>
-                          <div className="h-2 rounded-full bg-hover overflow-hidden">
-                            <div className="h-full rounded-full bg-accent transition-all" style={{
-                              width: `${Math.round((parseInt(gpu.memoryUsed) / parseInt(gpu.memoryTotal)) * 100)}%`
-                            }} />
-                          </div>
+                    gpu.type === 'discrete' ? (
+                      /* NVIDIA / discrete GPU */
+                      <div className="rounded-xl bg-gradient-to-br from-accent/5 to-transparent border border-accent/10 p-4">
+                        <div className="flex items-center justify-between mb-3">
+                          <p className="text-2xl font-semibold text-accent uppercase tracking-wide">GPU</p>
+                          {gpu.temperature && <span className="text-3xl font-black text-muted">{gpu.temperature}</span>}
                         </div>
-                        <div>
-                          <div className="flex justify-between text-sm mb-1">
-                            <span className="text-muted">Utilization</span>
-                            <span className="font-mono font-semibold text-text">{gpu.utilization}</span>
-                          </div>
-                          <div className="h-2 rounded-full bg-hover overflow-hidden">
-                            <div className="h-full rounded-full bg-success transition-all" style={{
-                              width: `${parseInt(gpu.utilization) || 0}%`
-                            }} />
-                          </div>
+                        <p className="text-md font-bold text-text">{gpu.name}</p>
+                        <div className="mt-3 space-y-2">
+                          {gpu.memoryUsed && gpu.memoryTotal && (
+                            <div>
+                              <div className="flex justify-between text-sm mb-1">
+                                <span className="text-muted">VRAM</span>
+                                <span className="font-mono text-text">{gpu.memoryUsed} / {gpu.memoryTotal}</span>
+                              </div>
+                              <div className="h-2 rounded-full bg-hover overflow-hidden">
+                                <div className="h-full rounded-full bg-accent transition-all" style={{
+                                  width: `${Math.round((parseInt(gpu.memoryUsed) / parseInt(gpu.memoryTotal)) * 100)}%`
+                                }} />
+                              </div>
+                            </div>
+                          )}
+                          {gpu.utilization && (
+                            <div>
+                              <div className="flex justify-between text-sm mb-1">
+                                <span className="text-muted">Utilization</span>
+                                <span className="font-mono font-semibold text-text">{gpu.utilization}</span>
+                              </div>
+                              <div className="h-2 rounded-full bg-hover overflow-hidden">
+                                <div className="h-full rounded-full bg-success transition-all" style={{
+                                  width: `${parseInt(gpu.utilization) || 0}%`
+                                }} />
+                              </div>
+                            </div>
+                          )}
                         </div>
                       </div>
-                    </div>
+                    ) : (
+                      /* Apple Silicon / unified memory GPU */
+                      <div className="rounded-xl bg-gradient-to-br from-accent/5 to-transparent border border-accent/10 p-4">
+                        <div className="flex items-center justify-between mb-3">
+                          <p className="text-2xl font-semibold text-accent uppercase tracking-wide">GPU</p>
+                          <span className="px-2 py-0.5 rounded-md text-md font-bold bg-accent/10 text-accent uppercase">Unified Memory</span>
+                        </div>
+                        <p className="text-md font-bold text-text">{gpu.name}</p>
+                        <div className="mt-3 grid grid-cols-2 gap-3">
+                          {gpu.unifiedMemory && (
+                            <div className="rounded-lg bg-hover/50 px-3 py-2">
+                              <p className="text-sm text-muted">Shared Memory</p>
+                              <p className="text-lg font-mono font-semibold text-text">{gpu.unifiedMemory}</p>
+                            </div>
+                          )}
+                          {gpu.gpuCores && (
+                            <div className="rounded-lg bg-hover/50 px-3 py-2">
+                              <p className="text-sm text-muted">GPU Cores</p>
+                              <p className="text-lg font-mono font-semibold text-text">{gpu.gpuCores}</p>
+                            </div>
+                          )}
+                          {gpu.metalFamily && (
+                            <div className="rounded-lg bg-hover/50 px-3 py-2 col-span-2">
+                              <p className="text-sm text-muted">Metal Support</p>
+                              <p className="text-lg font-mono font-semibold text-text">{gpu.metalFamily}</p>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    )
                   ) : (
                     <div className="rounded-xs border border-border-light p-4 text-center">
                       <p className="text-xl text-muted">No GPU detected</p>
@@ -312,7 +358,7 @@ export function Infrastructure() {
                     <div className="space-y-2">
                       <p className="text-md font-semibold text-muted uppercase tracking-wide">Model Assignment</p>
                       {([
-                        { role: 'llm' as const, label: 'LightRAG', desc: 'Extraction & RAG' },
+                        { role: 'llm' as const, label: 'Extraction', desc: 'Code analysis' },
                         { role: 'chat' as const, label: 'Chat', desc: 'Chat widget' },
                       ]).map(({ role, label, desc }) => (
                         <div key={role} className="flex-2 items-center gap-2">
@@ -465,151 +511,23 @@ export function Infrastructure() {
               </div>
             </div>
 
-            {/* ── Row 2: LightRAG + Claude ── */}
+            {/* ── Row 2: Graph Storage + Claude ── */}
             <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
 
-              {/* ── Card 3: LightRAG ── */}
+              {/* ── Card 3: Graph Storage (PostgreSQL) ── */}
               <div className={cardClass}>
                 <div className={headerClass}>
                   <div className="flex items-center gap-2">
                     <Brain className="size-6 text-accent" />
-                    <h2 className="text-4xl font-semibold text-text">LightRAG</h2>
-                    {lightragData?.version && (
-                      <span className="text-[10px] font-mono text-muted">v{String(lightragData.version)}</span>
-                    )}
+                    <h2 className="text-4xl font-semibold text-text">Graph Storage</h2>
                   </div>
-                  <StatusDot ok={serviceStatus(health, 'lightrag')} />
+                  <StatusDot ok={serviceStatus(health, 'graphStorage')} />
                 </div>
                 <div className="p-5 space-y-4">
-                {/* Pipeline status */}
-                <div className={cn(
-                  'rounded-xs border p-4',
-                  lightragData?.pipelineBusy
-                    ? 'border-warning/20 bg-gradient-to-br from-warning/5 to-transparent'
-                    : 'border-success/20 bg-gradient-to-br from-success/5 to-transparent'
-                )}>
-                  <div className="flex items-center justify-between mb-2">
-                    <p className="text-xl font-semibold uppercase tracking-wide text-muted">Pipeline</p>
-                    <span className={cn(
-                      'px-2 py-0.5 rounded-full text-[10px] font-bold uppercase',
-                      lightragData?.pipelineBusy ? 'bg-warning/10 text-warning' : 'bg-success/10 text-success'
-                    )}>
-                      {lightragData?.pipelineBusy ? 'Processing' : 'Idle'}
-                    </span>
+                  <div className="rounded-xs border border-success/20 bg-gradient-to-br from-success/5 to-transparent p-4">
+                    <p className="text-xl font-semibold uppercase tracking-wide text-muted mb-2">Engine</p>
+                    <p className="text-sm font-mono text-text">graphify + PostgreSQL</p>
                   </div>
-                  {lightragData?.pipelineBusy && pendingDocs > 0 && (
-                    <div className="mt-2">
-                      <div className="flex justify-between text-md mb-1">
-                        <span className="text-muted">Progress</span>
-                        <span className="font-mono text-text">{processedDocs}/{totalDocs} docs ({progressPct}%)</span>
-                      </div>
-                      <div className="h-2 rounded-full bg-hover overflow-hidden">
-                        <div className="h-full rounded-full bg-accent transition-all duration-500" style={{ width: `${progressPct}%` }} />
-                      </div>
-                    </div>
-                  )}
-                </div>
-
-                {/* Document counts */}
-                <div className="grid grid-cols-2 gap-3">
-                  {[
-                    { label: 'Processed', value: processedDocs, color: 'text-success' },
-                    { label: 'Pending', value: pendingDocs, color: 'text-warning' },
-                    { label: 'Failed', value: failedDocs, color: failedDocs > 0 ? 'text-error' : 'text-muted', action: failedDocs > 0 },
-                    { label: 'Total', value: totalDocs, color: 'text-text' },
-                  ].map(({ label, value, color, action }: { label: string; value: number; color: string; action?: boolean }) => (
-                    <div key={label} className="rounded-lg bg-hover/50 p-3 text-center">
-                      <p className={cn('text-3xl font-black font-mono', color)}>{value}</p>
-                      <p className="text-sm text-muted uppercase tracking-wide">{label}</p>
-                      {action && (
-                        <button
-                          onClick={async () => {
-                            try {
-                              await api.reprocessFailedDocuments();
-                              fetchHealth();
-                            } catch (err) { console.error(err); }
-                          }}
-                          className="mt-1 text-md rounded-full border border-accent px-4 font-semibold text-accent hover:underline"
-                        >
-                          Retry all
-                        </button>
-                      )}
-                    </div>
-                  ))}
-                </div>
-
-                {/* Graph stats */}
-                <div className="flex items-center justify-between text-lg border-t border-border-light/50 pt-3">
-                  <span className="text-muted">Graph entities</span>
-                  <span className="font-mono font-semibold text-text">{String((lightragData?.graphLabels as number) ?? 0)}</span>
-                </div>
-
-                {/* Models */}
-                {lightragData?.llmModel && (
-                  <div className="space-y-1 text-sm">
-                    <div className="flex justify-between">
-                      <span className="text-muted font-black">LLM</span>
-                      <span className="font-mono text-text">{lightragData.llmModel as string}</span>
-                    </div>
-                    <div className="flex justify-between">
-                      <span className="text-muted  font-black">Embedding</span>
-                      <span className="font-mono text-text">{lightragData.embeddingModel as string}</span>
-                    </div>
-                  </div>
-                )}
-
-                
-
-                  {/* Performance tuning — compact 2x2 grid */}
-                  {(() => {
-                    const conf = (lightragData as any)?.config as { maxParallelInsert: number; maxAsync: number; embeddingFuncMaxAsync: number; embeddingBatchNum: number } | undefined;
-                    if (!conf) return null;
-
-                    const params = [
-                      { key: 'maxParallelInsert', label: 'Parallel', value: conf.maxParallelInsert, min: 1, max: 16 },
-                      { key: 'maxAsync', label: 'LLM Async', value: conf.maxAsync, min: 1, max: 32 },
-                      { key: 'embeddingFuncMaxAsync', label: 'Emb. Async', value: conf.embeddingFuncMaxAsync, min: 1, max: 32 },
-                      { key: 'embeddingBatchNum', label: 'Emb. Batch', value: conf.embeddingBatchNum, min: 1, max: 64 },
-                    ];
-
-                    return (
-                      <div className="rounded-lg bg-hover/50 p-3">
-                        <div className="flex items-center justify-between mb-2">
-                          <p className="text-xl font-semibold text-muted uppercase tracking-wide">Perf. Tuning</p>
-                          {savingLightrag && <Loader2 className="h-3 w-3 animate-spin text-accent" />}
-                        </div>
-                        <div className="grid grid-cols-2 gap-x-3 gap-y-1.5">
-                          {params.map(({ key, label, value, min, max }) => (
-                            <div key={key} className="flex items-center justify-between gap-1">
-                              <span className="text-md text-muted truncate">{label}</span>
-                              <select
-                                value={value}
-                                onChange={async (e) => {
-                                  setSavingLightrag(true);
-                                  try {
-                                    await api.updateLightragConfig({ [key]: Number(e.target.value) });
-                                    await fetchHealth();
-                                  } catch (err) { console.error(err); }
-                                  finally { setSavingLightrag(false); }
-                                }}
-                                disabled={savingLightrag}
-                                className="w-12 rounded border border-border-light bg-card px-1 py-0.5 text-[10px] font-mono font-semibold text-text outline-none disabled:opacity-50"
-                              >
-                                {Array.from({ length: Math.ceil(max / (max <= 16 ? 1 : 2)) }, (_, i) => {
-                                  const v = max <= 16 ? i + 1 : (i + 1) * 2;
-                                  return v <= max ? <option key={v} value={v}>{v}</option> : null;
-                                })}
-                              </select>
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-                    );
-                  })()}
-
-                  {lightragData?.latency != null && (
-                    <p className="text-xs text-light">{String(lightragData.latency)}ms</p>
-                  )}
                 </div>
               </div>
 

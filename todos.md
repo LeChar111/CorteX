@@ -1,0 +1,1 @@
+le front n'affiche aps la carte graphique ou no gpu sur mac arm avec la mémoir eunifiée, corrige l'affiche pour afficher quelque chose en rapport avec la config de l'user peu. imporete la machine 

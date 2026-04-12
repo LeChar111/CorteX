@@ -1,22 +1,9 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
-import { LightRAGClient } from '../../lightrag/client.js';
-import { getDb, getProjectById, listProjectLinks } from '@cortex/db';
+import { getDb, listProjectLinks, searchGraphNodes, getGraphAroundEntity } from '@cortex/db';
+import { buildCacheKey, getCached, setCache } from '../middleware/cache.js';
 
 export const queryRoutes = new Hono();
-
-// Frontend uses user-friendly names, LightRAG uses its own mode names
-const FRONTEND_TO_LIGHTRAG_MODE: Record<string, 'mix' | 'local' | 'global' | 'naive'> = {
-  hybrid: 'mix',
-  semantic: 'local',
-  graph: 'global',
-  fulltext: 'naive',
-  // Also accept LightRAG native modes directly
-  mix: 'mix',
-  local: 'local',
-  global: 'global',
-  naive: 'naive',
-};
 
 const QuerySchema = z.object({
   query: z.string().min(1),
@@ -30,64 +17,99 @@ const QuerySchema = z.object({
 queryRoutes.post('/query', async (c) => {
   const body = await c.req.json();
   const data = QuerySchema.parse(body);
+  const db = getDb();
 
-  const lightragMode = FRONTEND_TO_LIGHTRAG_MODE[data.mode] ?? 'mix';
+  const mode = data.mode;
+  const limit = data.limit ?? 20;
 
-  const lightragUrl = process.env['LIGHTRAG_URL'] ?? 'http://localhost:9621';
-  const client = new LightRAGClient(lightragUrl);
-
-  let enrichedQuery = data.query;
-
+  // Resolve project scope
+  let projectIds: string[] = [];
   if (data.projectId) {
-    const db = getDb();
-    const project = await getProjectById(db, data.projectId);
-    if (project) {
-      enrichedQuery = `[Project: ${project.name}] ${data.query}`;
+    projectIds.push(data.projectId);
+    if (data.includeLinked) {
+      const links = await listProjectLinks(db, data.projectId);
+      const linkedIds = links
+        .flatMap((l) => [l.sourceProjectId, l.targetProjectId])
+        .filter((id) => id !== data.projectId);
+      projectIds.push(...linkedIds);
+    }
+  }
 
-      if (data.includeLinked) {
-        const links = await listProjectLinks(db, data.projectId);
-        if (links.length > 0) {
-          const linkedIds = new Set(
-            links.flatMap((l) => [l.sourceProjectId, l.targetProjectId])
-              .filter((id) => id !== data.projectId)
-          );
-          const linkedProjects = await Promise.all(
-            [...linkedIds].map((id) => getProjectById(db, id))
-          );
-          const linkedNames = linkedProjects.filter(Boolean).map((p) => p!.name);
-          if (linkedNames.length > 0) {
-            enrichedQuery = `[Projects: ${project.name}, ${linkedNames.join(', ')}] ${data.query}`;
-          }
+  // Check cache
+  const cacheKey = buildCacheKey(data.query, mode, data.projectId);
+  const cached = await getCached(cacheKey);
+
+  if (cached) {
+    return c.json({
+      query: data.query,
+      mode,
+      projectId: data.projectId,
+      includeLinked: data.includeLinked,
+      response: cached,
+      cached: true,
+      timestamp: new Date().toISOString(),
+    });
+  }
+
+  try {
+    // Search graph nodes matching the query across relevant projects
+    const allMatches = [];
+    if (projectIds.length > 0) {
+      for (const pid of projectIds) {
+        const nodes = await searchGraphNodes(db, data.query, pid, limit);
+        allMatches.push(...nodes);
+      }
+    } else {
+      const nodes = await searchGraphNodes(db, data.query, undefined, limit);
+      allMatches.push(...nodes);
+    }
+
+    // Get graph context around the top matches (up to 3)
+    const topMatches = allMatches.slice(0, 3);
+    const contextNodes: Record<string, unknown>[] = [];
+    const contextEdges: Record<string, unknown>[] = [];
+
+    for (const match of topMatches) {
+      const graph = await getGraphAroundEntity(db, match.label, 1);
+      for (const n of graph.nodes) {
+        if (!contextNodes.some((cn) => cn.id === n.id)) {
+          contextNodes.push(n);
         }
       }
+      contextEdges.push(...graph.edges);
     }
-  }
 
-  let response: string;
-  try {
-    response = await client.query(enrichedQuery, lightragMode, 90_000);
+    // Build a summary response
+    const matchSummaries = allMatches.map((n) => {
+      const props = (n.properties ?? {}) as Record<string, unknown>;
+      return `- **${n.label}** (${n.type}): ${String(props.description ?? n.sourceFile ?? '')}`;
+    });
+
+    const response = allMatches.length > 0
+      ? `Found ${allMatches.length} matching entities:\n\n${matchSummaries.join('\n')}`
+      : `No entities found matching "${data.query}".`;
+
+    await setCache(cacheKey, response);
+
+    return c.json({
+      query: data.query,
+      mode,
+      projectId: data.projectId,
+      includeLinked: data.includeLinked,
+      response,
+      cached: false,
+      timestamp: new Date().toISOString(),
+    });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    if (msg.includes('timed out') || msg.includes('abort')) {
-      return c.json({
-        query: data.query,
-        mode: data.mode,
-        projectId: data.projectId,
-        includeLinked: data.includeLinked,
-        response: '',
-        error: 'Query timed out. Try "Full-text" mode for faster results, or wait for LightRAG pipeline to finish processing.',
-        timestamp: new Date().toISOString(),
-      }, 504);
-    }
-    throw err;
+    return c.json({
+      query: data.query,
+      mode,
+      projectId: data.projectId,
+      includeLinked: data.includeLinked,
+      response: '',
+      error: `Query failed: ${msg}`,
+      timestamp: new Date().toISOString(),
+    }, 500);
   }
-
-  return c.json({
-    query: data.query,
-    mode: data.mode,
-    projectId: data.projectId,
-    includeLinked: data.includeLinked,
-    response,
-    timestamp: new Date().toISOString(),
-  });
 });

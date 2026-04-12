@@ -24,7 +24,35 @@ export const syncStatusTool = {
             projectId = detected.projectId;
         }
         const result = await client.getScanStatus(projectId);
-        return JSON.stringify(result, null, 2);
+        const lines = ['# Sync Status', ''];
+        if (result.entityCount !== undefined || result.relationCount !== undefined) {
+            lines.push(`**Entities:** ${result.entityCount ?? 0} | **Relations:** ${result.relationCount ?? 0}`);
+            lines.push('');
+        }
+        if (result.running && result.running.length > 0) {
+            lines.push('## Running Jobs');
+            for (const j of result.running) {
+                lines.push(`- ${j.branch ?? 'unknown'} (${j.mode ?? 'full'}) started ${j.startedAt ?? '?'}`);
+            }
+            lines.push('');
+        }
+        else {
+            lines.push('No running jobs.');
+            lines.push('');
+        }
+        if (result.lastCompleted) {
+            lines.push(`**Last completed:** ${result.lastCompleted.completedAt ?? 'unknown'}`);
+        }
+        // Include any extra fields as fallback
+        const knownKeys = new Set(['running', 'lastCompleted', 'entityCount', 'relationCount']);
+        const extraKeys = Object.keys(result).filter(k => !knownKeys.has(k));
+        if (extraKeys.length > 0) {
+            lines.push('', '## Details');
+            for (const k of extraKeys) {
+                lines.push(`- **${k}:** ${JSON.stringify(result[k])}`);
+            }
+        }
+        return lines.join('\n');
     },
 };
 //# sourceMappingURL=sync-status.js.map

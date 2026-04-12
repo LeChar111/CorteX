@@ -1,3 +1,24 @@
+################################################################
+# CorteX -- Docker Compose (multi-platform)
+#
+# Usage:
+#   macOS / CPU-only:   docker compose up -d
+#   NVIDIA GPU:         docker compose --profile nvidia up -d
+#
+# On macOS (Apple Silicon / Intel):
+#   - Ollama runs NATIVELY (not in Docker) for Metal GPU access
+#   - Only postgres + redis run in containers
+#   - Install Ollama: brew install ollama && ollama serve
+#
+# On Linux with NVIDIA GPU:
+#   - All services run in Docker
+#   - Requires: nvidia-container-toolkit
+#   - Use: docker compose --profile nvidia up -d
+#
+# On Linux CPU-only:
+#   - docker compose up -d (Ollama without GPU acceleration)
+################################################################
+
 services:
   postgres:
     image: pgvector/pgvector:pg16
@@ -6,7 +27,7 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-cortex_dev}
       POSTGRES_DB: cortex
     ports:
-      - "5432:5432"
+      - "${POSTGRES_PORT:-5432}:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
       - ./scripts/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
@@ -17,22 +38,46 @@ services:
       retries: 5
     restart: unless-stopped
 
-  # Redis désactivé — utilise le Redis local sur :6379
-  # redis:
-  #   image: redis:7-alpine
-  #   ports:
-  #     - "6379:6379"
-  #   volumes:
-  #     - redisdata:/data
-  #   healthcheck:
-  #     test: ["CMD", "redis-cli", "ping"]
-  #     interval: 10s
-  #     timeout: 5s
-  #     retries: 5
-  #   restart: unless-stopped
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "${REDIS_PORT:-6380}:6379"
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
 
+  #-----------------------------------------------------------------
+  # Ollama -- CPU-only (Linux without GPU)
+  # On macOS, skip this and run Ollama natively for Metal GPU access
+  #-----------------------------------------------------------------
   ollama:
     image: ollama/ollama
+    profiles: ["linux"]
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    environment:
+      OLLAMA_NUM_PARALLEL: "4"
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+
+  #-----------------------------------------------------------------
+  # Ollama -- NVIDIA GPU (Linux with nvidia-container-toolkit)
+  #-----------------------------------------------------------------
+  ollama-nvidia:
+    image: ollama/ollama
+    profiles: ["nvidia"]
     runtime: nvidia
     ports:
       - "11434:11434"
@@ -43,7 +88,6 @@ services:
       OLLAMA_GPU_OVERHEAD: "0"
       NVIDIA_VISIBLE_DEVICES: all
       OLLAMA_NUM_PARALLEL: "4"
-    # GPU NVIDIA
     deploy:
       resources:
         reservations:
@@ -59,28 +103,24 @@ services:
       start_period: 10s
     restart: unless-stopped
 
-  lightrag:
+  #-----------------------------------------------------------------
+  # Ingestion Workers (Node.js + graphify Python bridge)
+  #-----------------------------------------------------------------
+  ingestion:
     build:
-      context: ./docker/lightrag
-      dockerfile: Dockerfile
-    ports:
-      - "9621:9621"
+      context: .
+      dockerfile: docker/ingestion.Dockerfile
+    user: "${UID:-1000}:${GID:-1000}"
     volumes:
-      - lightrag_data:/data/lightrag
+      - ${HOME}/.ssh:/home/cortex/.ssh:ro
     environment:
-      LLM_MODEL: ${OLLAMA_LLM_MODEL:-qwen2.5:7b}
-      EMBEDDING_MODEL: ${OLLAMA_EMBEDDING_MODEL:-nomic-embed-text}
-      OLLAMA_HOST: http://ollama:11434
-      EMBEDDING_DIM: 768
-      POSTGRES_HOST: postgres
-      POSTGRES_PORT: 5432
-      POSTGRES_USER: cortex
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-cortex_dev}
-      POSTGRES_DB: cortex
+      REDIS_URL: redis://redis:6379
+      DATABASE_URL: postgresql://cortex:${POSTGRES_PASSWORD:-cortex_dev}@postgres:5432/cortex
+      RUST_LOG: ${RUST_LOG:-info}
     depends_on:
       postgres:
         condition: service_healthy
-      ollama:
+      redis:
         condition: service_healthy
     restart: unless-stopped
 
@@ -88,4 +128,3 @@ volumes:
   pgdata:
   redisdata:
   ollama_data:
-  lightrag_data:

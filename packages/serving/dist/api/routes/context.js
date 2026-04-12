@@ -1,6 +1,5 @@
 import { Hono } from 'hono';
-import { getDb, getProjectById, getProjectByName, listReposByProject, listProjectLinks, listArchRules, listAnnotationsByProject, listScanJobs, } from '@cortex/db';
-import { LightRAGClient } from '../../lightrag/client.js';
+import { getDb, getProjectById, getProjectByName, listReposByProject, listProjectLinks, listArchRules, listAnnotationsByProject, listScanJobs, getGraphForProject, searchGraphNodes, } from '@cortex/db';
 export const contextRoutes = new Hono();
 contextRoutes.get('/context/:projectId', async (c) => {
     const projectId = c.req.param('projectId');
@@ -22,47 +21,41 @@ contextRoutes.get('/context/:projectId', async (c) => {
         listScanJobs(db, project.id),
     ]);
     const recentScans = allScans.slice(0, 5);
-    // Get graph summary (entity types + counts) from LightRAG
-    const lightragUrl = process.env['LIGHTRAG_URL'] ?? 'http://localhost:9621';
-    const lightrag = new LightRAGClient(lightragUrl);
+    // Get graph summary from PG
     let graphSummary = {
         entityCount: 0, edgeCount: 0, topTypes: {},
     };
     try {
-        const graph = await lightrag.getGraphFull();
-        const nodes = graph.nodes;
-        const edges = graph.edges;
-        // Filter nodes to this project using repo keywords
-        const keywords = repos.flatMap(r => [r.name.toLowerCase(), r.slug.toLowerCase()]);
-        const projectNodes = keywords.length > 0
-            ? nodes.filter(n => {
-                const text = `${String(n.properties?.description ?? '')} ${String(n.properties?.source_id ?? '')}`.toLowerCase();
-                return keywords.some(kw => text.includes(kw));
-            })
-            : nodes;
+        const graph = await getGraphForProject(db, project.id);
         const typeCounts = {};
-        for (const n of projectNodes) {
-            const t = String(n.properties?.entity_type ?? 'unknown');
+        for (const n of graph.nodes) {
+            const t = String(n.type ?? 'unknown');
             typeCounts[t] = (typeCounts[t] ?? 0) + 1;
         }
         graphSummary = {
-            entityCount: projectNodes.length,
-            edgeCount: edges.length,
+            entityCount: graph.nodes.length,
+            edgeCount: graph.edges.length,
             topTypes: typeCounts,
         };
     }
     catch {
-        // LightRAG may not be available
+        // Graph may not have data yet
     }
-    // Optionally enrich with focused semantic query
+    // Optionally search graph nodes for focused context
     let focusedContext = null;
     if (focus) {
         try {
-            const response = await lightrag.query(`[Project: ${project.name}] ${focus}`, 'local', 30_000);
-            focusedContext = response;
+            const matches = await searchGraphNodes(db, focus, project.id, 10);
+            if (matches.length > 0) {
+                const lines = matches.map((n) => {
+                    const props = (n.properties ?? {});
+                    return `- ${n.label} (${n.type}): ${String(props.description ?? n.sourceFile ?? '')}`;
+                });
+                focusedContext = `Found ${matches.length} entities matching "${focus}":\n${lines.join('\n')}`;
+            }
         }
         catch {
-            // ignore timeout
+            // ignore
         }
     }
     // Build linked projects info

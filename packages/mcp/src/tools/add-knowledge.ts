@@ -4,7 +4,7 @@ import type { DetectedProject } from '../detector.js';
 export const addKnowledgeTool = {
   name: 'add_knowledge',
   description:
-    'Manually add knowledge to the graph. Useful for architecture decisions, conventions, or information not in code.',
+    'Manually add knowledge to the graph. Creates a graph entity node and optional structural relations to existing entities.',
   inputSchema: {
     type: 'object' as const,
     properties: {
@@ -17,7 +17,7 @@ export const addKnowledgeTool = {
       relatedTo: {
         type: 'array',
         items: { type: 'string' },
-        description: 'Names of related entities (optional)',
+        description: 'Names of related entities — creates direct graph edges',
       },
       project: { type: 'string', description: 'Project name (auto-detected if omitted)' },
     },
@@ -31,9 +31,19 @@ export const addKnowledgeTool = {
     const name = args.name as string;
     const description = args.description as string;
     const project = (args.project as string) || detected?.projectName;
+    const entryType = (args.type as string) || 'concept';
     const relatedTo = args.relatedTo as string[] | undefined;
 
-    // Build enriched content that includes relations for LightRAG to index
+    // Create the entity node directly in the graph
+    await client.createGraphEntity({
+      name,
+      type: entryType.toUpperCase(),
+      description,
+      projectId: detected?.projectId,
+      projectName: project,
+    });
+
+    // Also ingest as document for semantic search
     let content = description;
     if (relatedTo && relatedTo.length > 0) {
       content += `\n\nRelated entities: ${relatedTo.join(', ')}`;
@@ -44,19 +54,20 @@ export const addKnowledgeTool = {
       name,
       type: 'knowledge',
       project,
+      projectId: detected?.projectId,
     });
 
-    // Create explicit relations if relatedTo is provided
+    // Create direct structural relations (graph edges)
     const linked: string[] = [];
     if (relatedTo && relatedTo.length > 0) {
       for (const target of relatedTo) {
         try {
-          await client.ingest({
-            content: `${name} is related to ${target}`,
+          await client.createGraphRelation({
             source: name,
             target,
-            relationType: 'related_to',
-            type: 'relation',
+            type: 'related_to',
+            description: `${name} is related to ${target}`,
+            projectId: detected?.projectId,
           });
           linked.push(target);
         } catch {

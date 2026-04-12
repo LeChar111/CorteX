@@ -14,10 +14,6 @@ export declare const getContextTool: {
                 type: string;
                 description: string;
             };
-            maxTokens: {
-                type: string;
-                description: string;
-            };
         };
         required: never[];
     };

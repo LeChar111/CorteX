@@ -10,7 +10,7 @@ export const scanTool = {
     properties: {
       project: { type: 'string', description: 'Project name to scan' },
       repo: { type: 'string', description: 'Repository name (optional, scans first repo if omitted)' },
-      branch: { type: 'string', description: 'Branch to scan (optional)' },
+      branch: { type: 'string', description: 'Branch to scan (auto-detected if omitted)' },
       mode: {
         type: 'string',
         enum: ['full', 'diff'],
@@ -26,7 +26,7 @@ export const scanTool = {
   ): Promise<string> {
     const projectName = args.project as string;
     const repoName = args.repo as string | undefined;
-    const branch = args.branch as string | undefined;
+    const branch = (args.branch as string | undefined) ?? detected?.repoBranch;
     const mode = (args.mode as string) || 'full';
 
     // Resolve project name to projectId

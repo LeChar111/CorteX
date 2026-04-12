@@ -11,6 +11,7 @@ const navEntries = [
     { label: 'Dashboard', to: '/' },
     { label: 'Projects', to: '/projects' },
     { label: 'Graph', to: '/graph' },
+    { label: 'Pipeline', to: '/pipeline' },
     {
         label: 'Quality',
         items: [
@@ -18,9 +19,7 @@ const navEntries = [
             { label: 'Conformance', to: '/conformance' },
         ],
     },
-    { label: 'Pipeline', to: '/pipeline' },
     { label: 'Infra', to: '/infrastructure' },
-    { label: 'Terminal', to: '/terminal' },
 ];
 function NavDropdown({ group, isActive }) {
     const [open, setOpen] = useState(false);
@@ -36,7 +35,7 @@ function NavDropdown({ group, isActive }) {
     }, []);
     return (_jsxs("div", { ref: ref, className: "relative", children: [_jsxs("button", { onClick: () => setOpen(!open), className: cn('flex items-center gap-1 px-4 py-2 rounded-full text-sm font-medium transition-all duration-200 whitespace-nowrap', groupActive
                     ? 'bg-sidebar-active text-white shadow-md'
-                    : 'text-muted hover:text-text hover:bg-bg-warm hover:scale-110 hover:font-black'), children: [group.label, _jsx(ChevronDown, { className: cn('h-3 w-3 transition-transform', open && 'rotate-180') })] }), open && (_jsx("div", { className: "absolute top-full left-1/2 -translate-x-1/2 mt-2 min-w-[140px] rounded-xl border border-border-light bg-card shadow-lg py-1 z-50", children: group.items.map((item) => (_jsx(Link, { to: item.to, onClick: () => setOpen(false), className: cn('block px-4 py-2 text-sm font-medium transition-colors', isActive(item.to)
+                    : 'text-muted hover:text-text hover:bg-bg-warm hover:scale-110 hover:font-black'), children: [group.label, _jsx(ChevronDown, { className: cn('h-3 w-3 transition-transform', open && 'rotate-180') })] }), open && (_jsx("div", { className: "absolute top-full left-1/2 -translate-x-1/2 mt-2 min-w-[140px] p-2 rounded-sm border border-border-light bg-card shadow-lg py-1 z-50", children: group.items.map((item) => (_jsx(Link, { to: item.to, onClick: () => setOpen(false), className: cn('block px-2 py-2 text-sm font-medium rounded-sm transition-colors', isActive(item.to)
                         ? 'bg-sidebar-active/10 text-text font-semibold'
                         : 'text-muted hover:text-text hover:bg-bg-warm'), children: item.label }, item.to))) }))] }));
 }

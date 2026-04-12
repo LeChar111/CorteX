@@ -11,21 +11,18 @@ export const SERVICES = [
     { key: 'postgres', name: 'PostgreSQL', image: 'pgvector/pgvector:pg16', port: ':5432', desc: 'pgvector/pgvector:pg16' },
     { key: 'redis', name: 'Redis', image: 'redis:7-alpine', port: ':6379', desc: 'redis:7-alpine' },
     { key: 'ollama', name: 'Ollama', image: 'ollama/ollama', port: ':11434', desc: 'Local LLM / Embeddings' },
-    { key: 'lightrag', name: 'LightRAG', image: 'custom', port: ':9621', desc: 'Graph RAG Engine' },
 ];
 /** All Docker services including the API itself. */
 export const DOCKER_SERVICES = [
     { key: 'postgres', name: 'PostgreSQL', image: 'pgvector/pgvector:pg16', port: ':5432', desc: 'pgvector/pgvector:pg16' },
     { key: 'redis', name: 'Redis', image: 'redis:7-alpine', port: ':6379', desc: 'redis:7-alpine' },
     { key: 'ollama', name: 'Ollama', image: 'ollama/ollama', port: ':11434', desc: 'Local LLM / Embeddings' },
-    { key: 'lightrag', name: 'LightRAG', image: 'custom', port: ':9621', desc: 'Graph RAG Engine' },
     { key: 'api', name: 'Cortex API', image: 'node', port: ':3100', desc: 'Cortex API Server' },
 ];
 /** Environment variables required for local development. */
 export const ENV_VARS = [
     { key: 'DATABASE_URL', sample: 'postgresql://cortex:***@localhost:5432/cortex' },
     { key: 'REDIS_URL', sample: 'redis://localhost:6379' },
-    { key: 'LIGHTRAG_URL', sample: 'http://localhost:9621' },
     { key: 'CORTEX_LLM_MODEL', sample: 'llama3.2:3b' },
     { key: 'PORT', sample: '3100' },
 ];

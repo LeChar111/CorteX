@@ -27,6 +27,9 @@ import { exportKbTool } from './tools/export-kb.js';
 import { diffReviewTool } from './tools/diff-review.js';
 import { crossProjectQueryTool } from './tools/cross-project-query.js';
 import { archCheckTool } from './tools/arch-check.js';
+import { communitiesTool } from './tools/communities.js';
+import { godNodesTool } from './tools/god-nodes.js';
+import { detectLinksTool } from './tools/detect-links.js';
 
 const allTools = [
   queryTool,
@@ -47,6 +50,9 @@ const allTools = [
   diffReviewTool,
   crossProjectQueryTool,
   archCheckTool,
+  communitiesTool,
+  godNodesTool,
+  detectLinksTool,
 ];
 
 const apiUrl = process.env.CORTEX_API_URL || 'http://localhost:3100';

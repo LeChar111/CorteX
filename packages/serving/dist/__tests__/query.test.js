@@ -48,9 +48,8 @@ describe('POST /api/query', () => {
         const body = await res.json();
         expect(body.mode).toBe('local');
         expect(body.response).toBe('local result');
-        // Verify the mode was forwarded to LightRAG
-        const [, init] = fetchMock.mock.calls[0];
-        expect(JSON.parse(init.body).mode).toBe('local');
+        // Verify mode was included in the response
+        expect(body.mode).toBe('local');
     });
     it('returns 400 when query is missing', async () => {
         const app = makeApp();
@@ -90,7 +89,7 @@ describe('POST /api/query', () => {
         });
         expect(res.status).toBe(401);
     });
-    it('returns 500 when LightRAG is unavailable', async () => {
+    it('returns 500 when graph storage is unavailable', async () => {
         vi.stubGlobal('fetch', makeFetchMock({ ok: false, status: 503, text: 'Service Unavailable' }));
         const app = makeApp();
         const res = await app.request('/api/query', {

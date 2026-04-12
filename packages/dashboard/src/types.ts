@@ -75,7 +75,7 @@ export interface CortexSnapshot {
   version: string;
   exportedAt: string;
   cortex: { projects: Array<Project & { repos: Repo[] }> };
-  lightrag: { documents: unknown[]; graph: { nodes: unknown[]; edges: unknown[] } };
+  graph: { nodes: unknown[]; edges: unknown[] };
 }
 
 export interface ImportResult {

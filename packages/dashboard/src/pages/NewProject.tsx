@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   Plus,
@@ -10,6 +10,12 @@ import {
   Check,
   AlertCircle,
   Loader2,
+  Lock,
+  Key,
+  ShieldCheck,
+  ShieldAlert,
+  Eye,
+  EyeOff,
 } from 'lucide-react';
 import { api } from '../api.ts';
 import { cn } from '../lib/utils.ts';
@@ -38,8 +44,44 @@ function parseGitUrl(url: string): { name: string; slug: string; provider: strin
 }
 
 // ---------------------------------------------------------------------------
+// Protocol detection
+// ---------------------------------------------------------------------------
+type RepoProtocol = 'ssh' | 'https' | 'local' | 'unknown';
+
+function detectProtocol(url: string): RepoProtocol {
+  if (!url.trim()) return 'unknown';
+  if (url.startsWith('/') || url.startsWith('~')) return 'local';
+  if (/^git@|^ssh:\/\//.test(url)) return 'ssh';
+  if (/^https?:\/\//.test(url)) return 'https';
+  return 'unknown';
+}
+
+function protocolLabel(protocol: RepoProtocol): string {
+  switch (protocol) {
+    case 'ssh': return 'SSH';
+    case 'https': return 'HTTPS';
+    case 'local': return 'Local';
+    default: return '';
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
+interface RepoCredentials {
+  saved: boolean;
+  saving: boolean;
+  error: string | null;
+  // SSH
+  sshKeyPath: string;
+  // HTTPS
+  token: string;
+}
+
+function emptyCredentials(): RepoCredentials {
+  return { saved: false, saving: false, error: null, sshKeyPath: '~/.ssh/id_ed25519', token: '' };
+}
+
 interface RepoEntry {
   id: string;
   cloneUrl: string;
@@ -48,6 +90,8 @@ interface RepoEntry {
   provider: string;
   techStack: string;
   defaultBranch: string;
+  credentials: RepoCredentials;
+  branches: string[];
 }
 
 function emptyRepo(): RepoEntry {
@@ -59,6 +103,8 @@ function emptyRepo(): RepoEntry {
     provider: 'github',
     techStack: '',
     defaultBranch: 'main',
+    credentials: emptyCredentials(),
+    branches: [],
   };
 }
 
@@ -193,6 +239,406 @@ function StepProjectInfo({
 }
 
 // ---------------------------------------------------------------------------
+// Credentials section per repo
+// ---------------------------------------------------------------------------
+
+/** Keys that match a given protocol+provider for filtering existing credentials */
+function matchingCredKeys(protocol: RepoProtocol, provider: string): string[] {
+  if (protocol === 'ssh') return ['SSH_KEY_PATH', 'SSH_PRIVATE_KEY'];
+  if (provider === 'github') return ['GITHUB_TOKEN', 'GITHUB_PAT'];
+  if (provider === 'gitlab') return ['GITLAB_TOKEN', 'GITLAB_PAT'];
+  if (provider === 'bitbucket') return ['BITBUCKET_APP_PASSWORD', 'BITBUCKET_API_TOKEN', 'BITBUCKET_TOKEN'];
+  return [`${provider.toUpperCase()}_TOKEN`];
+}
+
+function RepoCredentialsSection({
+  cloneUrl,
+  provider,
+  credentials,
+  onChange,
+  onBranchesLoaded,
+}: {
+  cloneUrl: string;
+  provider: string;
+  credentials: RepoCredentials;
+  onChange: (creds: RepoCredentials) => void;
+  onBranchesLoaded: (branches: string[], defaultBranch: string) => void;
+}) {
+  const [showValue, setShowValue] = useState(false);
+  const [testStatus, setTestStatus] = useState<'idle' | 'testing' | 'ok' | 'error'>('idle');
+  const [testError, setTestError] = useState<string | null>(null);
+  const [existingCreds, setExistingCreds] = useState<{ id: string; key: string; label: string; value: string }[]>([]);
+  const [sshKeys, setSshKeys] = useState<{ name: string; path: string; type: 'private' | 'public' }[]>([]);
+  const [mode, setMode] = useState<'select' | 'new'>('select');
+  const protocol = provider === 'local' ? 'local' : detectProtocol(cloneUrl);
+  const effectiveProtocol = provider === 'local' ? 'local' : (protocol === 'unknown' ? 'https' : protocol);
+
+  // Load existing credentials + SSH keys
+  useEffect(() => {
+    if (provider === 'local') return;
+    const ep = protocol === 'unknown' ? 'https' : protocol;
+    api.listCredentials(true).then((all) => {
+      const keys = matchingCredKeys(ep, provider);
+      const matching = all.filter((c) => keys.some((k) => c.key.startsWith(k) || c.key === k));
+      setExistingCreds(matching);
+      if (matching.length === 0 && ep !== 'ssh') setMode('new');
+    }).catch(() => setMode('new'));
+    if (ep === 'ssh') {
+      api.listSshKeys().then((keys) => {
+        setSshKeys(keys.filter((k) => k.type === 'private'));
+        if (keys.filter((k) => k.type === 'private').length > 0) setMode('select');
+      }).catch(() => {});
+    }
+  }, [provider, protocol]);
+
+  if (effectiveProtocol === 'local') return null;
+
+  const handleSave = async () => {
+    onChange({ ...credentials, saving: true, error: null });
+    try {
+      if (effectiveProtocol === 'ssh') {
+        await api.addCredential({
+          label: `SSH Key — ${cloneUrl.split('/').pop()?.replace('.git', '') || 'repo'}`,
+          provider,
+          key: 'SSH_KEY_PATH',
+          value: credentials.sshKeyPath.trim(),
+        });
+      } else {
+        if (!credentials.token.trim()) {
+          onChange({ ...credentials, saving: false, error: 'Token is required' });
+          return;
+        }
+        const keyName = provider === 'github'
+          ? 'GITHUB_TOKEN'
+          : provider === 'gitlab'
+            ? 'GITLAB_TOKEN'
+            : provider === 'bitbucket'
+              ? 'BITBUCKET_APP_PASSWORD'
+              : `${provider.toUpperCase()}_TOKEN`;
+        await api.addCredential({
+          label: `${provider} Access Token`,
+          provider,
+          key: keyName,
+          value: credentials.token.trim(),
+        });
+      }
+      onChange({ ...credentials, saving: false, saved: true, error: null });
+      // Refresh existing creds list
+      const ep = protocol === 'unknown' ? 'https' : protocol;
+      api.listCredentials(true).then((all) => {
+        const keys = matchingCredKeys(ep, provider);
+        setExistingCreds(all.filter((c) => keys.some((k) => c.key.startsWith(k) || c.key === k)));
+      }).catch(() => {});
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Failed to save credential';
+      if (msg.includes('already exists')) {
+        onChange({ ...credentials, saving: false, saved: true, error: null });
+      } else {
+        onChange({ ...credentials, saving: false, error: msg });
+      }
+    }
+  };
+
+  const handleSelectExisting = (credId: string) => {
+    const cred = existingCreds.find((c) => c.id === credId);
+    if (!cred) return;
+    if (effectiveProtocol === 'ssh') {
+      onChange({ ...credentials, sshKeyPath: cred.value, saved: true, error: null });
+    } else {
+      onChange({ ...credentials, token: cred.value, saved: true, error: null });
+    }
+  };
+
+  const handleTestConnection = async () => {
+    setTestStatus('testing');
+    setTestError(null);
+    try {
+      const res = await api.testRepoConnection(cloneUrl, provider);
+      if (res.ok) {
+        setTestStatus('ok');
+        if (res.branches && res.branches.length > 0) {
+          onBranchesLoaded(res.branches, res.defaultBranch ?? 'main');
+        }
+        setTimeout(() => setTestStatus('idle'), 4000);
+      } else {
+        setTestStatus('error');
+        setTestError(res.error ?? 'Connection failed');
+      }
+    } catch (err) {
+      setTestStatus('error');
+      setTestError(err instanceof Error ? err.message : 'Connection failed');
+    }
+  };
+
+  const tokenLabel = provider === 'bitbucket' ? 'App Password' : 'Personal Access Token';
+  const tokenPlaceholder =
+    provider === 'github' ? 'ghp_xxxxxxxxxxxxxxxxxxxx'
+    : provider === 'gitlab' ? 'glpat-xxxxxxxxxxxxxxxxxxxx'
+    : provider === 'bitbucket' ? 'ATBBxxxxxxxxxxxxxxxxxxxx'
+    : 'token';
+  const tokenHint =
+    provider === 'github' ? 'A GitHub Personal Access Token (classic or fine-grained) with repo read access.'
+    : provider === 'gitlab' ? 'A GitLab Personal Access Token with read_repository scope.'
+    : provider === 'bitbucket' ? 'A Bitbucket App Password with repository read permission.'
+    : 'An access token with repository read access.';
+
+  return (
+    <div className="rounded-[var(--radius-md)] border border-[var(--color-border-light)] bg-[var(--color-bg)] p-4 space-y-3">
+      {/* Header */}
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <Lock className="w-3.5 h-3.5 text-muted" />
+          <span className="text-xs font-semibold text-text">Authentication</span>
+          <span className={cn(
+            'text-[10px] font-mono px-1.5 py-0.5 rounded',
+            effectiveProtocol === 'ssh' ? 'bg-violet-100 text-violet-700 dark:bg-violet-900/30 dark:text-violet-300' : 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300',
+          )}>
+            {protocolLabel(effectiveProtocol)}
+          </span>
+        </div>
+        {credentials.saved && (
+          <span className="inline-flex items-center gap-1 text-[10px] font-medium text-success">
+            <ShieldCheck className="w-3 h-3" />
+            Credential selected
+          </span>
+        )}
+      </div>
+
+      {/* Mode toggle — only for HTTPS when existing creds exist */}
+      {effectiveProtocol !== 'ssh' && existingCreds.length > 0 && (
+        <div className="flex items-center bg-[var(--color-hover)] rounded-full p-0.5 w-fit">
+          <button
+            type="button"
+            onClick={() => setMode('select')}
+            className={cn(
+              'px-3 py-1 rounded-full text-[11px] font-medium transition-colors',
+              mode === 'select' ? 'bg-card text-text shadow-sm' : 'text-muted hover:text-text',
+            )}
+          >
+            Use existing
+          </button>
+          <button
+            type="button"
+            onClick={() => setMode('new')}
+            className={cn(
+              'px-3 py-1 rounded-full text-[11px] font-medium transition-colors',
+              mode === 'new' ? 'bg-card text-text shadow-sm' : 'text-muted hover:text-text',
+            )}
+          >
+            Add new
+          </button>
+        </div>
+      )}
+
+      {/* Select existing credential */}
+      {mode === 'select' && effectiveProtocol !== 'ssh' && existingCreds.length > 0 && (
+        <div className="space-y-2">
+          {existingCreds.map((cred) => {
+            const isSelected = credentials.saved && credentials.token === cred.value;
+            return (
+              <button
+                key={cred.id}
+                type="button"
+                onClick={() => handleSelectExisting(cred.id)}
+                className={cn(
+                  'w-full flex items-center gap-3 px-3 py-2.5 rounded-[var(--radius-md)] border text-left transition-colors',
+                  isSelected
+                    ? 'border-success/40 bg-success/5'
+                    : 'border-[var(--color-border-light)] hover:border-accent/30 hover:bg-[var(--color-hover)]',
+                )}
+              >
+                <div className={cn(
+                  'w-7 h-7 rounded-full flex items-center justify-center flex-shrink-0',
+                  isSelected ? 'bg-success/15' : 'bg-[var(--color-hover)]',
+                )}>
+                  {isSelected ? <Check className="w-3.5 h-3.5 text-success" /> : <Key className="w-3.5 h-3.5 text-muted" />}
+                </div>
+                <div className="flex-1 min-w-0">
+                  <p className="text-xs font-medium text-text truncate">{cred.label}</p>
+                  <p className="text-[10px] text-muted font-mono">{cred.key}</p>
+                </div>
+                {isSelected && (
+                  <span className="text-[10px] font-medium text-success flex-shrink-0">Selected</span>
+                )}
+              </button>
+            );
+          })}
+        </div>
+      )}
+
+      {/* SSH key selector — from ~/.ssh + saved credentials */}
+      {effectiveProtocol === 'ssh' && (mode === 'select' || mode === 'new') && (
+        <div>
+          <label className="block text-xs font-medium text-text mb-1.5">
+            <Key className="w-3 h-3 inline mr-1" />
+            SSH Private Key
+          </label>
+          {(sshKeys.length > 0 || existingCreds.length > 0) ? (
+            <>
+              <select
+                value={credentials.sshKeyPath}
+                onChange={(e) => {
+                  const val = e.target.value;
+                  if (val === '__custom__') {
+                    onChange({ ...credentials, sshKeyPath: '', saved: false });
+                    setMode('new');
+                  } else {
+                    onChange({ ...credentials, sshKeyPath: val, saved: true });
+                  }
+                }}
+                className={cn(inputCls, 'font-mono text-xs')}
+              >
+                <option value="" disabled>Select an SSH key…</option>
+                {sshKeys.length > 0 && (
+                  <optgroup label="~/.ssh">
+                    {sshKeys.map((k) => (
+                      <option key={k.path} value={k.path}>{k.path}</option>
+                    ))}
+                  </optgroup>
+                )}
+                {existingCreds.length > 0 && (
+                  <optgroup label="Saved credentials">
+                    {existingCreds.map((c) => (
+                      <option key={c.id} value={c.value}>{c.label} ({c.value})</option>
+                    ))}
+                  </optgroup>
+                )}
+                <optgroup label="Other">
+                  <option value="__custom__">Enter custom path…</option>
+                </optgroup>
+              </select>
+              {credentials.sshKeyPath && credentials.sshKeyPath !== '__custom__' && (
+                <p className="text-[10px] text-success mt-1 flex items-center gap-1">
+                  <Check className="w-3 h-3" />
+                  Key selected: {credentials.sshKeyPath}
+                </p>
+              )}
+            </>
+          ) : (
+            <div className="flex gap-2">
+              <input
+                type="text"
+                value={credentials.sshKeyPath}
+                onChange={(e) => onChange({ ...credentials, sshKeyPath: e.target.value, saved: false })}
+                placeholder="~/.ssh/id_ed25519"
+                className={cn(inputCls, 'font-mono text-xs flex-1')}
+              />
+              <button
+                type="button"
+                onClick={handleSave}
+                disabled={credentials.saving || credentials.saved}
+                className={cn(
+                  'px-3 py-2 rounded-[var(--radius-md)] text-xs font-medium transition-colors flex-shrink-0 inline-flex items-center gap-1.5',
+                  credentials.saved
+                    ? 'bg-success/10 text-success border border-success/20'
+                    : credentials.saving
+                      ? 'bg-[var(--color-hover)] text-muted cursor-not-allowed'
+                      : 'bg-accent text-white hover:bg-accent/90',
+                )}
+              >
+                {credentials.saving ? <Loader2 className="w-3 h-3 animate-spin" /> : credentials.saved ? <Check className="w-3 h-3" /> : <ShieldCheck className="w-3 h-3" />}
+                {credentials.saving ? 'Saving...' : credentials.saved ? 'Saved' : 'Save'}
+              </button>
+            </div>
+          )}
+          <p className="text-[10px] text-muted mt-1">
+            Private key used to authenticate with this repository.
+          </p>
+        </div>
+      )}
+
+      {/* New credential form — HTTPS only (SSH handled above) */}
+      {mode === 'new' && effectiveProtocol !== 'ssh' && (
+        <div>
+          <label className="block text-xs font-medium text-text mb-1.5">
+            <Key className="w-3 h-3 inline mr-1" />
+            {tokenLabel}
+          </label>
+          <div className="flex gap-2">
+            <div className="relative flex-1">
+              <input
+                type={showValue ? 'text' : 'password'}
+                value={credentials.token}
+                onChange={(e) => onChange({ ...credentials, token: e.target.value, saved: false })}
+                placeholder={tokenPlaceholder}
+                className={cn(inputCls, 'font-mono text-xs pr-9')}
+              />
+              <button
+                type="button"
+                onClick={() => setShowValue(!showValue)}
+                className="absolute right-2.5 top-1/2 -translate-y-1/2 text-muted hover:text-text transition-colors"
+              >
+                {showValue ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+              </button>
+            </div>
+            <button
+              type="button"
+              onClick={handleSave}
+              disabled={credentials.saving || credentials.saved || !credentials.token.trim()}
+              className={cn(
+                'px-3 py-2 rounded-[var(--radius-md)] text-xs font-medium transition-colors flex-shrink-0 inline-flex items-center gap-1.5',
+                credentials.saved
+                  ? 'bg-success/10 text-success border border-success/20'
+                  : credentials.saving || !credentials.token.trim()
+                    ? 'bg-[var(--color-hover)] text-muted cursor-not-allowed'
+                    : 'bg-accent text-white hover:bg-accent/90',
+              )}
+            >
+              {credentials.saving ? <Loader2 className="w-3 h-3 animate-spin" /> : credentials.saved ? <Check className="w-3 h-3" /> : <ShieldCheck className="w-3 h-3" />}
+              {credentials.saving ? 'Saving...' : credentials.saved ? 'Saved' : 'Save'}
+            </button>
+          </div>
+          <p className="text-[10px] text-muted mt-1">{tokenHint}</p>
+        </div>
+      )}
+
+      {credentials.error && (
+        <div className="flex items-center gap-1.5 text-[10px] text-error">
+          <ShieldAlert className="w-3 h-3 flex-shrink-0" />
+          {credentials.error}
+        </div>
+      )}
+
+      {/* Test Connection */}
+      <div className="flex items-center gap-2 pt-1 border-t border-[var(--color-border-light)]">
+        <button
+          type="button"
+          onClick={handleTestConnection}
+          disabled={testStatus === 'testing' || !cloneUrl.trim()}
+          className={cn(
+            'inline-flex items-center gap-1.5 px-3 py-1.5 rounded-[var(--radius-md)] text-xs font-medium transition-colors',
+            testStatus === 'ok'
+              ? 'bg-success/10 text-success border border-success/20'
+              : testStatus === 'error'
+                ? 'bg-error/10 text-error border border-error/20'
+                : testStatus === 'testing'
+                  ? 'bg-[var(--color-hover)] text-muted cursor-not-allowed'
+                  : 'border border-[var(--color-border)] text-text hover:bg-[var(--color-hover)]',
+          )}
+        >
+          {testStatus === 'testing' ? (
+            <Loader2 className="w-3 h-3 animate-spin" />
+          ) : testStatus === 'ok' ? (
+            <ShieldCheck className="w-3 h-3" />
+          ) : testStatus === 'error' ? (
+            <ShieldAlert className="w-3 h-3" />
+          ) : (
+            <Lock className="w-3 h-3" />
+          )}
+          {testStatus === 'testing' ? 'Testing...' : testStatus === 'ok' ? 'Connected!' : testStatus === 'error' ? 'Failed' : 'Test Connection'}
+        </button>
+        {testStatus === 'ok' && (
+          <span className="text-[10px] text-success">Repository accessible</span>
+        )}
+        {testError && (
+          <span className="text-[10px] text-error">{testError}</span>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Repo row
 // ---------------------------------------------------------------------------
 function RepoRow({
@@ -288,6 +734,17 @@ function RepoRow({
         </div>
       </div>
 
+      {/* Credentials section — shown when URL is entered */}
+      <RepoCredentialsSection
+        cloneUrl={repo.cloneUrl}
+        provider={repo.provider}
+        credentials={repo.credentials}
+        onChange={(creds) => onChange({ ...repo, credentials: creds })}
+        onBranchesLoaded={(branches, defaultBranch) =>
+          onChange({ ...repo, branches, defaultBranch })
+        }
+      />
+
       <div className="grid grid-cols-2 gap-3">
         {/* Name (auto-detected) */}
         <div>
@@ -337,13 +794,28 @@ function RepoRow({
         {/* Default branch */}
         <div>
           <label className="block text-xs font-medium text-text mb-1.5">Default Branch</label>
-          <input
-            type="text"
-            value={repo.defaultBranch}
-            onChange={(e) => onChange({ ...repo, defaultBranch: e.target.value })}
-            placeholder="main"
-            className={cn(inputCls, 'font-mono text-xs')}
-          />
+          {repo.branches.length > 0 ? (
+            <select
+              value={repo.defaultBranch}
+              onChange={(e) => onChange({ ...repo, defaultBranch: e.target.value })}
+              className={cn(inputCls, 'font-mono text-xs')}
+            >
+              {repo.branches.map((b) => (
+                <option key={b} value={b}>{b}</option>
+              ))}
+            </select>
+          ) : (
+            <input
+              type="text"
+              value={repo.defaultBranch}
+              onChange={(e) => onChange({ ...repo, defaultBranch: e.target.value })}
+              placeholder="main"
+              className={cn(inputCls, 'font-mono text-xs')}
+            />
+          )}
+          {repo.branches.length > 0 && (
+            <p className="text-[10px] text-success mt-1">{repo.branches.length} branches found</p>
+          )}
         </div>
       </div>
     </div>
@@ -461,6 +933,21 @@ function StepReview({
                     <span className="text-xs font-mono text-muted bg-[var(--color-hover)] px-1.5 py-0.5 rounded">
                       {repo.defaultBranch}
                     </span>
+                    {detectProtocol(repo.cloneUrl) !== 'unknown' && (
+                      <span className={cn(
+                        'text-[10px] font-mono px-1.5 py-0.5 rounded',
+                        detectProtocol(repo.cloneUrl) === 'ssh'
+                          ? 'bg-violet-100 text-violet-700'
+                          : 'bg-blue-100 text-blue-700',
+                      )}>
+                        {protocolLabel(detectProtocol(repo.cloneUrl))}
+                      </span>
+                    )}
+                    {repo.credentials.saved && (
+                      <span className="text-[10px] text-success inline-flex items-center gap-0.5">
+                        <ShieldCheck className="w-3 h-3" /> Creds
+                      </span>
+                    )}
                   </div>
                   <p className="text-xs text-muted mt-0.5 truncate font-mono">{repo.cloneUrl}</p>
                   {repo.techStack && (

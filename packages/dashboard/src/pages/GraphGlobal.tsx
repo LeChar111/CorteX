@@ -1,4 +1,4 @@
-import { useEffect, useState, useRef, useCallback, useMemo } from 'react';
+import { useEffect, useState, useRef, useCallback } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import {
   GitBranch,
@@ -14,347 +14,11 @@ import {
   forceManyBody,
   forceCenter,
   forceCollide,
-  type Simulation,
   type SimulationNodeDatum,
   type SimulationLinkDatum,
 } from 'd3-force';
 import { api } from '../api.ts';
 import type { Project, ProjectLink } from '../types.ts';
-
-// ─── Full Knowledge Graph (Canvas-based) ────────────────────────────────────
-
-const KB_NODE_COLORS: Record<string, string> = {
-  service: '#6366f1', endpoint: '#22c55e', function: '#eab308', class: '#ef4444',
-  table: '#06b6d4', component: '#f97316', config: '#8b5cf6', module: '#ec4899',
-  variable: '#14b8a6', constant: '#0ea5e9', command: '#a855f7', data: '#64748b',
-  concept: '#f43f5e', artifact: '#fb923c', method: '#facc15', content: '#84cc16',
-  person: '#e879f9', other: '#9ca3af',
-};
-
-function normalizeType(raw: string): string {
-  const lower = (raw || '').toLowerCase();
-  if (KB_NODE_COLORS[lower]) return lower;
-  if (lower === '' || lower === 'unknown') return 'other';
-  return 'other';
-}
-
-function getNodeColor(type: string): string {
-  return KB_NODE_COLORS[type] ?? KB_NODE_COLORS.other;
-}
-
-interface KBNode {
-  id: string;
-  name: string;
-  type: string;
-  x?: number;
-  y?: number;
-  fx?: number | null;
-  fy?: number | null;
-}
-
-interface KBLink {
-  source: string | KBNode;
-  target: string | KBNode;
-}
-
-function FullKnowledgeGraph() {
-  const canvasRef = useRef<HTMLCanvasElement>(null);
-  const containerRef = useRef<HTMLDivElement>(null);
-  const [nodes, setNodes] = useState<KBNode[]>([]);
-  const [links, setLinks] = useState<KBLink[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [hovered, setHovered] = useState<KBNode | null>(null);
-  const simRef = useRef<Simulation<KBNode, KBLink> | null>(null);
-
-  // Pan & zoom state
-  const zoomRef = useRef(1);
-  const offsetRef = useRef({ x: 0, y: 0 });
-  const dragRef = useRef<{ node: KBNode | null; panning: boolean; startX: number; startY: number }>({
-    node: null, panning: false, startX: 0, startY: 0,
-  });
-
-  useEffect(() => {
-    api.getGraph().then((data: any) => {
-      if (!data || typeof data !== 'object') { setLoading(false); return; }
-      const gNodes: KBNode[] = (data.nodes || []).map((n: any, i: number) => ({
-        id: n.id || String(i),
-        name: n.name || (Array.isArray(n.labels) ? n.labels[0] : n.label) || n.id || `Node ${i}`,
-        type: normalizeType(n.type || n.entity_type || n.properties?.entity_type || ''),
-      }));
-      const nodeIds = new Set(gNodes.map((n) => n.id));
-      const gLinks: KBLink[] = (data.edges || data.links || [])
-        .filter((e: any) => nodeIds.has(e.source || e.from) && nodeIds.has(e.target || e.to))
-        .map((e: any) => ({ source: e.source || e.from, target: e.target || e.to }));
-      setNodes(gNodes);
-      setLinks(gLinks);
-      setLoading(false);
-    }).catch(() => setLoading(false));
-  }, []);
-
-  const draw = useCallback(() => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return;
-    const w = canvas.width;
-    const h = canvas.height;
-    const z = zoomRef.current;
-    const o = offsetRef.current;
-
-    // Dark background for contrast
-    ctx.fillStyle = '#0d1117';
-    ctx.fillRect(0, 0, w, h);
-
-    ctx.save();
-    ctx.translate(o.x, o.y);
-    ctx.scale(z, z);
-
-    // Draw edges
-    ctx.strokeStyle = 'rgba(140,160,180,0.2)';
-    ctx.lineWidth = 0.6;
-    for (const link of links) {
-      const s = link.source as KBNode;
-      const t = link.target as KBNode;
-      if (s.x == null || t.x == null) continue;
-      ctx.beginPath();
-      ctx.moveTo(s.x, s.y!);
-      ctx.lineTo(t.x, t.y!);
-      ctx.stroke();
-    }
-
-    // Draw nodes
-    for (const node of nodes) {
-      if (node.x == null) continue;
-      const color = getNodeColor(node.type);
-      const isHover = hovered?.id === node.id;
-      const r = isHover ? 8 : 5;
-
-      // Glow for hovered node
-      if (isHover) {
-        ctx.beginPath();
-        ctx.arc(node.x, node.y!, 14, 0, Math.PI * 2);
-        ctx.fillStyle = color + '33';
-        ctx.fill();
-      }
-
-      ctx.beginPath();
-      ctx.arc(node.x, node.y!, r, 0, Math.PI * 2);
-      ctx.fillStyle = color;
-      ctx.fill();
-
-      // Subtle border
-      ctx.strokeStyle = 'rgba(255,255,255,0.15)';
-      ctx.lineWidth = 0.5;
-      ctx.stroke();
-    }
-
-    // Draw hovered label
-    if (hovered && hovered.x != null) {
-      const label = `${hovered.name} (${hovered.type})`;
-      ctx.font = 'bold 12px system-ui, sans-serif';
-      const textW = ctx.measureText(label).width;
-      // Background pill
-      ctx.fillStyle = 'rgba(13,17,23,0.9)';
-      ctx.strokeStyle = 'rgba(255,255,255,0.2)';
-      ctx.lineWidth = 1;
-      const px = hovered.x + 12;
-      const py = hovered.y! - 16;
-      ctx.fillRect(px - 4, py - 12, textW + 8, 18);
-      // Text
-      ctx.fillStyle = '#e6edf3';
-      ctx.fillText(label, px, py);
-    }
-
-    ctx.restore();
-  }, [nodes, links, hovered]);
-
-  useEffect(() => { draw(); }, [draw]);
-
-  // Resize canvas to match container
-  useEffect(() => {
-    const canvas = canvasRef.current;
-    const container = containerRef.current;
-    if (!canvas || !container) return;
-    const resize = () => {
-      const w = container.clientWidth || 900;
-      canvas.width = w;
-      canvas.height = 600;
-      draw();
-    };
-    resize();
-    const observer = new ResizeObserver(resize);
-    observer.observe(container);
-    return () => observer.disconnect();
-  }, [draw]);
-
-  // D3 simulation
-  useEffect(() => {
-    if (nodes.length === 0) return;
-    const width = containerRef.current?.clientWidth ?? 900;
-    const height = 600;
-
-    const sim = forceSimulation<KBNode>(nodes)
-      .force('link', forceLink<KBNode, KBLink>(links).id((d) => d.id).distance(25).strength(0.5))
-      .force('charge', forceManyBody().strength(-15).distanceMax(200))
-      .force('center', forceCenter(width / 2, height / 2))
-      .force('collide', forceCollide(6))
-      .alphaDecay(0.03);
-
-    simRef.current = sim;
-    sim.on('tick', () => { draw(); });
-    return () => { sim.stop(); };
-  }, [nodes, links]);
-
-  // Mouse interactions
-  const findNodeAt = useCallback((cx: number, cy: number): KBNode | null => {
-    const z = zoomRef.current;
-    const o = offsetRef.current;
-    const x = (cx - o.x) / z;
-    const y = (cy - o.y) / z;
-    for (const node of nodes) {
-      if (node.x == null) continue;
-      const dx = node.x - x;
-      const dy = node.y! - y;
-      if (dx * dx + dy * dy < 64) return node; // radius ~8px
-    }
-    return null;
-  }, [nodes]);
-
-  const handleCanvasMouseDown = useCallback((e: React.MouseEvent) => {
-    const rect = canvasRef.current?.getBoundingClientRect();
-    if (!rect) return;
-    const cx = e.clientX - rect.left;
-    const cy = e.clientY - rect.top;
-    const node = findNodeAt(cx, cy);
-    if (node) {
-      dragRef.current = { node, panning: false, startX: cx, startY: cy };
-      node.fx = node.x;
-      node.fy = node.y;
-      simRef.current?.alphaTarget(0.3).restart();
-    } else {
-      dragRef.current = { node: null, panning: true, startX: cx, startY: cy };
-    }
-  }, [findNodeAt]);
-
-  const handleCanvasMouseMove = useCallback((e: React.MouseEvent) => {
-    const rect = canvasRef.current?.getBoundingClientRect();
-    if (!rect) return;
-    const cx = e.clientX - rect.left;
-    const cy = e.clientY - rect.top;
-    const d = dragRef.current;
-
-    if (d.node) {
-      const z = zoomRef.current;
-      const o = offsetRef.current;
-      d.node.fx = (cx - o.x) / z;
-      d.node.fy = (cy - o.y) / z;
-      return;
-    }
-    if (d.panning) {
-      const dx = cx - d.startX;
-      const dy = cy - d.startY;
-      d.startX = cx;
-      d.startY = cy;
-      offsetRef.current = { x: offsetRef.current.x + dx, y: offsetRef.current.y + dy };
-      draw();
-      return;
-    }
-    // Hover detection
-    setHovered(findNodeAt(cx, cy));
-  }, [findNodeAt, draw]);
-
-  const handleCanvasMouseUp = useCallback(() => {
-    const d = dragRef.current;
-    if (d.node) {
-      d.node.fx = null;
-      d.node.fy = null;
-      simRef.current?.alphaTarget(0);
-    }
-    dragRef.current = { node: null, panning: false, startX: 0, startY: 0 };
-  }, []);
-
-  // Attach wheel listener natively with { passive: false } so preventDefault works
-  useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    const onWheel = (e: WheelEvent) => {
-      e.preventDefault();
-      const rect = canvas.getBoundingClientRect();
-      const cx = e.clientX - rect.left;
-      const cy = e.clientY - rect.top;
-      const oldZoom = zoomRef.current;
-      const factor = e.deltaY < 0 ? 1.1 : 0.9;
-      const newZoom = Math.max(0.1, Math.min(5, oldZoom * factor));
-      offsetRef.current = {
-        x: cx - (cx - offsetRef.current.x) * (newZoom / oldZoom),
-        y: cy - (cy - offsetRef.current.y) * (newZoom / oldZoom),
-      };
-      zoomRef.current = newZoom;
-      draw();
-    };
-    canvas.addEventListener('wheel', onWheel, { passive: false });
-    return () => canvas.removeEventListener('wheel', onWheel);
-  }, [draw]);
-
-  // Collect type counts for legend
-  const typeCounts = useMemo(() => {
-    const counts: Record<string, number> = {};
-    for (const n of nodes) { counts[n.type] = (counts[n.type] ?? 0) + 1; }
-    return Object.entries(counts).sort((a, b) => b[1] - a[1]);
-  }, [nodes]);
-
-  if (loading) {
-    return (
-      <div className="bg-card rounded-[var(--radius-lg)] border border-[var(--color-border-light)] shadow-sm flex items-center justify-center h-48">
-        <Loader2 className="w-5 h-5 animate-spin text-muted" />
-        <span className="ml-2 text-sm text-muted">Loading knowledge graph...</span>
-      </div>
-    );
-  }
-
-  if (nodes.length === 0) {
-    return (
-      <div className="bg-card rounded-[var(--radius-lg)] border border-[var(--color-border-light)] shadow-sm p-8 text-center">
-        <Network className="w-8 h-8 text-muted mx-auto mb-2" />
-        <p className="text-sm text-muted">No graph data yet. Scan some projects first.</p>
-      </div>
-    );
-  }
-
-  return (
-    <div className="bg-card rounded-[var(--radius-lg)] border border-[var(--color-border-light)] shadow-sm overflow-hidden">
-      <div className="flex items-center justify-between px-5 py-3 border-b border-[var(--color-border-light)]">
-        <div className="flex items-center gap-2">
-          <Network className="w-4 h-4 text-accent" />
-          <span className="text-sm font-semibold text-text">Full Knowledge Graph</span>
-        </div>
-        <span className="text-xs text-muted">{nodes.length} nodes &middot; {links.length} edges</span>
-      </div>
-      <div ref={containerRef} style={{ position: 'relative' }}>
-        <canvas
-          ref={canvasRef}
-          width={900}
-          height={600}
-          style={{ width: '100%', height: 600, cursor: 'grab', background: '#0d1117' }}
-          onMouseDown={handleCanvasMouseDown}
-          onMouseMove={handleCanvasMouseMove}
-          onMouseUp={handleCanvasMouseUp}
-          onMouseLeave={handleCanvasMouseUp}
-        />
-      </div>
-      {/* Legend */}
-      <div className="px-4 py-3 border-t border-[var(--color-border-light)] flex flex-wrap gap-3">
-        {typeCounts.slice(0, 12).map(([type, count]) => (
-          <div key={type} className="flex items-center gap-1.5 text-[11px] text-muted">
-            <div className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: getNodeColor(type) }} />
-            <span>{type}</span>
-            <span className="text-[10px] opacity-60">({count})</span>
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
 
 interface GraphNode extends SimulationNodeDatum {
   id: string;
@@ -467,7 +131,6 @@ export function GraphGlobal() {
   );
 
   const handleSvgMouseDown = useCallback((e: React.MouseEvent) => {
-    // Only pan when clicking on SVG background (not on a node)
     if (dragNode.current) return;
     isPanning.current = true;
     panStart.current = { x: e.clientX, y: e.clientY };
@@ -520,9 +183,9 @@ export function GraphGlobal() {
         </p>
       </div>
 
-      {/* Per-project knowledge graph links — primary content */}
+      {/* Per-project knowledge graph links */}
       {projects.length === 0 ? (
-        <div className="bg-card rounded-[var(--radius-lg)] border border-[var(--color-border-light)] shadow-sm p-12 text-center">
+        <div className="bg-card rounded border border-[var(--color-border-light)] shadow-sm p-12 text-center">
           <FolderKanban className="w-10 h-10 text-[var(--color-text-light)] mx-auto mb-3" />
           <p className="text-sm text-muted">No projects yet. Create a project to get started.</p>
           <Link
@@ -535,24 +198,24 @@ export function GraphGlobal() {
       ) : (
         <>
           <div>
-            <h2 className="text-sm font-semibold text-text mb-3">Project Knowledge Graphs</h2>
+            <h2 className="text-4xl font-semibold text-text mb-3">Project Knowledge Graphs</h2>
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
               {projects.map((p) => (
                 <Link
                   key={p.id}
                   to={`/graph/${p.id}`}
-                  className="group bg-card rounded-[var(--radius-lg)] border border-[var(--color-border-light)] shadow-sm p-5 hover:shadow-md hover:border-info/30 transition-all flex items-center justify-between"
+                  className="group bg-card border border-[var(--color-border-light)] shadow-sm p-5 hover:shadow-md hover:border-info/30 transition-all flex items-center justify-between"
                 >
                   <div className="flex items-center gap-3">
-                    <div className="w-10 h-10 rounded-[var(--radius-md)] bg-[color-mix(in_srgb,var(--color-info)_10%,transparent)] flex items-center justify-center flex-shrink-0 group-hover:bg-[color-mix(in_srgb,var(--color-info)_15%,transparent)] transition-colors">
+                    <div className="w-10 h-10 rounded-full ring-2 ring-[var(--color-info)] bg-[color-mix(in_srgb,var(--color-info)_10%,transparent)] flex items-center justify-center flex-shrink-0 group-hover:bg-[color-mix(in_srgb,var(--color-info)_15%,transparent)] transition-colors">
                       <GitBranch className="w-5 h-5 text-info" />
                     </div>
                     <div>
-                      <h3 className="text-sm font-semibold text-text group-hover:text-info transition-colors">
+                      <h3 className="text-2xl font-semibold text-text group-hover:text-info transition-colors">
                         {p.name}
                       </h3>
                       {p.description && (
-                        <p className="text-xs text-muted mt-0.5 line-clamp-1">{p.description}</p>
+                        <p className="text-md text-muted mt-0.5 line-clamp-2">{p.description}</p>
                       )}
                     </div>
                   </div>
@@ -564,7 +227,7 @@ export function GraphGlobal() {
 
           {/* Project dependency graph */}
           <div>
-            <h2 className="text-sm font-semibold text-text mb-3">Project Dependencies</h2>
+            <h2 className="text-4xl mt-5 font-semibold text-text mb-3">Project Dependencies</h2>
             <div
               ref={containerRef}
               className="bg-card rounded-[var(--radius-lg)] border border-[var(--color-border-light)] shadow-sm overflow-hidden relative"
@@ -578,7 +241,7 @@ export function GraphGlobal() {
               <svg
                 ref={svgRef}
                 width="100%"
-                height={400}
+                height={500}
                 className="cursor-grab active:cursor-grabbing"
                 onMouseDown={handleSvgMouseDown}
                 onMouseMove={handleMouseMove}
@@ -619,7 +282,7 @@ export function GraphGlobal() {
                       y2={target.y}
                       stroke={color}
                       strokeWidth={2}
-                      strokeOpacity={0.6}
+                      strokeOpacity={0.3}
                       markerEnd={`url(#arrow-${edge.linkType})`}
                     />
                   );
@@ -678,11 +341,29 @@ export function GraphGlobal() {
         </>
       )}
 
-      {/* Full Knowledge Graph — all entities across all projects */}
+      {/* Global Knowledge Graph link */}
       {projects.length > 0 && (
         <div>
-          <h2 className="text-sm font-semibold text-text mb-3">Global Knowledge Graph</h2>
-          <FullKnowledgeGraph />
+          <h2 className="text-4xl mt-15 font-semibold text-text mb-3">Global Knowledge Graph</h2>
+          <Link
+            to="/graph/all"
+            className="group bg-card border border-[var(--color-border-light)] shadow-sm p-6 flex items-center justify-between hover:shadow-md hover:border-accent/30 transition-all rounded-[var(--radius-lg)]"
+          >
+            <div className="flex items-center gap-4">
+              <div className="w-12 h-12 rounded-full ring-2 ring-accent bg-[color-mix(in_srgb,var(--color-accent)_10%,transparent)] flex items-center justify-center">
+                <Network className="w-6 h-6 text-accent" />
+              </div>
+              <div>
+                <h3 className="text-2xl font-semibold text-text group-hover:text-accent transition-colors">
+                  Explore Full Knowledge Graph
+                </h3>
+                <p className="text-md text-muted mt-0.5">
+                  Interactive vis.js visualization of all entities and relationships across projects
+                </p>
+              </div>
+            </div>
+            <ArrowRight className="w-5 h-5 text-[var(--color-text-light)] group-hover:text-accent transition-colors" />
+          </Link>
         </div>
       )}
     </div>

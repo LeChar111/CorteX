@@ -6,7 +6,7 @@ export const scanTool = {
         properties: {
             project: { type: 'string', description: 'Project name to scan' },
             repo: { type: 'string', description: 'Repository name (optional, scans first repo if omitted)' },
-            branch: { type: 'string', description: 'Branch to scan (optional)' },
+            branch: { type: 'string', description: 'Branch to scan (auto-detected if omitted)' },
             mode: {
                 type: 'string',
                 enum: ['full', 'diff'],
@@ -18,7 +18,7 @@ export const scanTool = {
     async handler(args, client, detected) {
         const projectName = args.project;
         const repoName = args.repo;
-        const branch = args.branch;
+        const branch = args.branch ?? detected?.repoBranch;
         const mode = args.mode || 'full';
         // Resolve project name to projectId
         const projects = await client.listProjects();
@@ -54,7 +54,7 @@ export const scanTool = {
             branch,
             mode,
         });
-        return JSON.stringify(result, null, 2);
+        return `Scan triggered for ${projectName}/${repo.name}${branch ? ` (branch: ${branch})` : ''} in ${mode} mode. Job ID: ${result.id ?? 'unknown'}, status: ${result.status ?? 'queued'}.`;
     },
 };
 //# sourceMappingURL=scan.js.map

@@ -93,7 +93,7 @@ export const getContextTool = {
       lines.push('');
     }
 
-    // Focused context from LightRAG
+    // Focused context from knowledge graph
     if (ctx.focusedContext) {
       lines.push(`## Focus: ${focus}`);
       lines.push(ctx.focusedContext);

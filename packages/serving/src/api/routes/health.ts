@@ -1,8 +1,8 @@
 import { Hono } from 'hono';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { createConnection } from 'node:net';
 import { getPool } from '@cortex/db';
+import { getRedis } from '../../redis.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -45,64 +45,22 @@ async function checkPostgres(): Promise<ServiceHealth> {
 }
 
 async function checkRedis(): Promise<ServiceHealth> {
-  const redisUrl = process.env['REDIS_URL'] ?? 'redis://localhost:6379';
-  const url = new URL(redisUrl.replace('redis://', 'http://'));
-  const host = url.hostname;
-  const port = Number(url.port) || 6379;
-
+  const start = performance.now();
   try {
-    const { latency } = await timed(() => new Promise<void>((resolve, reject) => {
-      const socket = createConnection({ host, port }, () => {
-        socket.destroy();
-        resolve();
-      });
-      socket.on('error', reject);
-      socket.setTimeout(2000, () => { socket.destroy(); reject(new Error('timeout')); });
-    }));
-    return { status: 'ok', latency };
+    const redis = getRedis();
+    await redis.ping();
+    return { status: 'ok', latency: Math.round(performance.now() - start) };
   } catch {
-    return { status: 'error', latency: 0 };
+    return { status: 'error', latency: Math.round(performance.now() - start) };
   }
 }
 
-async function checkLightrag(): Promise<ServiceHealth> {
-  const lightragUrl = process.env['LIGHTRAG_URL'] ?? 'http://localhost:9621';
+async function checkGraphStorage(): Promise<ServiceHealth> {
   try {
-    const { result: health, latency } = await timed(
-      () => fetchJson(`${lightragUrl}/health`) as Promise<Record<string, unknown>>,
-    );
-
-    let documents: Record<string, number> = {};
-    try {
-      const counts = await fetchJson(`${lightragUrl}/documents/status_counts`) as { status_counts?: Record<string, number> };
-      documents = counts.status_counts ?? {};
-    } catch { /* ignore */ }
-
-    // Graph stats
-    let graphLabels = 0;
-    try {
-      const labels = await fetchJson(`${lightragUrl}/graph/label/list`) as string[];
-      graphLabels = labels.length;
-    } catch { /* ignore */ }
-
-    const conf = health.configuration as Record<string, unknown> | undefined;
-
-    return {
-      status: 'ok',
-      latency,
-      version: health.core_version ?? null,
-      pipelineBusy: health.pipeline_busy ?? false,
-      documents,
-      graphLabels,
-      llmModel: conf?.llm_model ?? null,
-      embeddingModel: conf?.embedding_model ?? null,
-      config: {
-        maxParallelInsert: conf?.max_parallel_insert ?? 2,
-        maxAsync: conf?.max_async ?? 4,
-        embeddingFuncMaxAsync: conf?.embedding_func_max_async ?? 8,
-        embeddingBatchNum: conf?.embedding_batch_num ?? 10,
-      },
-    };
+    const { getPgGraphClient } = await import('../../graph/pg-graph-client.js');
+    const client = getPgGraphClient();
+    const { latency } = await timed(() => client.health());
+    return { status: 'ok', latency, storage: 'postgresql' };
   } catch {
     return { status: 'error', latency: 0 };
   }
@@ -145,8 +103,18 @@ async function checkOllama(): Promise<ServiceHealth> {
       chat: process.env['OLLAMA_CHAT_MODEL'] ?? 'qwen3.5:9b',
     };
 
-    // GPU info via nvidia-smi
-    let gpu: { name: string; memoryUsed: string; memoryTotal: string; utilization: string; temperature: string } | null = null;
+    // GPU info — try nvidia-smi first, then macOS Apple Silicon detection
+    let gpu: {
+      name: string;
+      memoryUsed?: string;
+      memoryTotal?: string;
+      utilization?: string;
+      temperature?: string;
+      type: 'discrete' | 'unified';
+      unifiedMemory?: string;
+      gpuCores?: string;
+      metalFamily?: string;
+    } | null = null;
     try {
       const { stdout } = await execFileAsync('nvidia-smi', [
         '--query-gpu=name,memory.used,memory.total,utilization.gpu,temperature.gpu',
@@ -160,9 +128,48 @@ async function checkOllama(): Promise<ServiceHealth> {
           memoryTotal: `${parts[2]} MiB`,
           utilization: `${parts[3]}%`,
           temperature: `${parts[4]}°C`,
+          type: 'discrete',
         };
       }
-    } catch { /* no GPU or nvidia-smi not available */ }
+    } catch {
+      // No NVIDIA GPU — try Apple Silicon detection via system_profiler
+      if (process.platform === 'darwin') {
+        try {
+          const { stdout: spJson } = await execFileAsync('system_profiler', [
+            'SPDisplaysDataType', '-json',
+          ], { timeout: 5000 });
+          const parsed = JSON.parse(spJson) as { SPDisplaysDataType?: Array<Record<string, unknown>> };
+          const displays = parsed.SPDisplaysDataType ?? [];
+          if (displays.length > 0) {
+            const d = displays[0]!;
+            const chipName = String(d.sppci_model ?? 'Apple GPU');
+            const cores = d.sppci_cores ? String(d.sppci_cores) : undefined;
+            const metalFamily = d.spdisplays_metal ? String(d.spdisplays_metal) : undefined;
+
+            // Get unified memory from hardware overview
+            let unifiedMemory: string | undefined;
+            try {
+              const { stdout: hwJson } = await execFileAsync('system_profiler', [
+                'SPHardwareDataType', '-json',
+              ], { timeout: 3000 });
+              const hwParsed = JSON.parse(hwJson) as { SPHardwareDataType?: Array<Record<string, unknown>> };
+              const hw = hwParsed.SPHardwareDataType?.[0];
+              if (hw) {
+                unifiedMemory = String(hw.physical_memory ?? '');
+              }
+            } catch { /* ignore */ }
+
+            gpu = {
+              name: chipName,
+              type: 'unified',
+              gpuCores: cores,
+              metalFamily,
+              unifiedMemory,
+            };
+          }
+        } catch { /* no GPU info available */ }
+      }
+    }
 
     return { status: 'ok', latency, available, running, gpu, roles };
   } catch {
@@ -195,16 +202,16 @@ async function checkClaude(): Promise<ServiceHealth> {
 healthRouter.get('/health', async (c) => {
   const timestamp = new Date().toISOString();
 
-  const [postgres, redis, lightrag, ollama, claude] = await Promise.all([
+  const [postgres, redis, graphStorage, ollama, claude] = await Promise.all([
     checkPostgres(),
     checkRedis(),
-    checkLightrag(),
+    checkGraphStorage(),
     checkOllama(),
     checkClaude(),
   ]);
 
-  const services = { postgres, redis, lightrag, ollama, claude };
-  const coreOk = [postgres, redis, lightrag, ollama].every((s) => s.status === 'ok');
+  const services = { postgres, redis, graphStorage, ollama, claude };
+  const coreOk = [postgres, redis, graphStorage, ollama].every((s) => s.status === 'ok');
 
   return c.json({ status: coreOk ? 'ok' : 'degraded', services, timestamp });
 });
@@ -257,34 +264,7 @@ healthRouter.put('/settings/model', async (c) => {
   return c.json({ status: 'ok', model });
 });
 
-healthRouter.put('/settings/lightrag', async (c) => {
-  const body = await c.req.json().catch(() => ({})) as Record<string, unknown>;
-
-  const config: Record<string, string> = {};
-  if (body.maxParallelInsert != null) config['MAX_PARALLEL_INSERT'] = String(body.maxParallelInsert);
-  if (body.maxAsync != null) config['MAX_ASYNC'] = String(body.maxAsync);
-  if (body.embeddingFuncMaxAsync != null) config['EMBEDDING_FUNC_MAX_ASYNC'] = String(body.embeddingFuncMaxAsync);
-  if (body.embeddingBatchNum != null) config['EMBEDDING_BATCH_NUM'] = String(body.embeddingBatchNum);
-
-  if (Object.keys(config).length === 0) {
-    return c.json({ status: 'error', message: 'No valid config parameters provided' }, 400);
-  }
-
-  // Apply by rebuilding LightRAG container with new env vars
-  try {
-    // Update the env vars for next restart
-    for (const [k, v] of Object.entries(config)) {
-      process.env[k] = v;
-    }
-
-    // Restart LightRAG to pick up changes
-    await dockerCompose('up', '-d', '--build', 'lightrag');
-
-    return c.json({ status: 'ok', applied: config });
-  } catch (err) {
-    return c.json({ status: 'error', message: err instanceof Error ? err.message : String(err) }, 500);
-  }
-});
+// Graph storage is PostgreSQL (via pg-graph-client)
 
 // ── Ollama model management ─────────────────────────────────
 
@@ -302,16 +282,6 @@ healthRouter.put('/settings/ollama-model', async (c) => {
 
   const envKey = role === 'llm' ? 'OLLAMA_LLM_MODEL' : 'OLLAMA_CHAT_MODEL';
   process.env[envKey] = model;
-
-  // If changing LightRAG model, restart it to pick up the new model
-  if (role === 'llm') {
-    try {
-      await dockerCompose('down', 'lightrag');
-      await dockerCompose('up', '-d', 'lightrag');
-    } catch (err) {
-      return c.json({ status: 'partial', model, message: 'Env set but LightRAG restart failed' }, 207);
-    }
-  }
 
   return c.json({ status: 'ok', role, model });
 });

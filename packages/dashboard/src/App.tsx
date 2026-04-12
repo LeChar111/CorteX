@@ -9,7 +9,6 @@ import { GraphGlobal } from './pages/GraphGlobal.tsx';
 import { Graph } from './pages/Graph.tsx';
 import { Infrastructure } from './pages/Infrastructure.tsx';
 import { SearchPage } from './pages/SearchPage.tsx';
-import { TerminalPage } from './pages/TerminalPage.tsx';
 import { SettingsPage } from './pages/SettingsPage.tsx';
 import { AnalysisPage } from './pages/AnalysisPage.tsx';
 import { ConformancePage } from './pages/ConformancePage.tsx';
@@ -39,7 +38,6 @@ export function App() {
           <Route path="/pipeline" element={<PipelinePage />} />
           <Route path="/infrastructure" element={<Infrastructure />} />
           <Route path="/search" element={<SearchPage />} />
-          <Route path="/terminal" element={<TerminalPage />} />
           <Route path="/settings" element={<SettingsPage />} />
         </Route>
       </Routes>

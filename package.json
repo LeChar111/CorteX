@@ -22,11 +22,7 @@
   "pnpm": {
     "onlyBuiltDependencies": [
       "msgpackr-extract",
-      "tree-sitter",
-      "tree-sitter-go",
-      "tree-sitter-javascript",
-      "tree-sitter-python",
-      "tree-sitter-typescript"
+      "esbuild"
     ]
   },
   "dependencies": {

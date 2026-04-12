@@ -1,843 +1,480 @@
-import { useEffect, useRef, useState, useCallback, useMemo } from 'react';
-import { useParams, Link } from 'react-router-dom';
-import {
-  ArrowLeft,
-  ZoomIn,
-  ZoomOut,
-  RotateCcw,
-  Search,
-  SlidersHorizontal,
-  X,
-  Circle,
-  Maximize2,
-  Plus,
-  Trash2,
-  MessageSquare,
-  Loader2,
-  Flame,
-} from 'lucide-react';
+// Knowledge Graph page — visual parity with graphify's vis-network HTML output.
+// Reproduces the same physics, node/edge styling, sidebar layout, search,
+// info panel and community legend, but fed from Cortex's /api/graph/summary.
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { useParams } from 'react-router-dom';
+import { Network, type Options } from 'vis-network';
+import { DataSet } from 'vis-data';
+import { Loader2 } from 'lucide-react';
 import { api } from '../api.ts';
-import { cn } from '../lib/utils.ts';
-import type { Annotation } from '../types.ts';
-import * as d3Force from 'd3-force';
+import { useAsyncData } from '../hooks/useAsyncData.ts';
+import type { Project } from '../types.ts';
 
-interface GraphNode {
+// Matches graphify's COMMUNITY_COLORS palette (20 hues).
+const COMMUNITY_COLORS = [
+  '#4E79A7', '#F28E2B', '#E15759', '#76B7B2', '#59A14F',
+  '#EDC948', '#B07AA1', '#FF9DA7', '#9C755F', '#BAB0AC',
+  '#86BCB6', '#F1CE63', '#499894', '#FABFD2', '#B6992D',
+  '#D37295', '#79706E', '#D7B5A6', '#A0CBE8', '#FFBE7D',
+];
+
+const STORAGE_KEY = 'cortex:graph:projectId';
+
+interface RawNode {
   id: string;
-  name: string;
-  type: string;
-  x?: number;
-  y?: number;
-  fx?: number | null;
-  fy?: number | null;
+  label: string;
+  type?: string;
+  source_file?: string;
+  project_id?: string;
+  community?: string | number;
+  community_size?: number;
+  degree?: number;
 }
 
-interface GraphLink {
-  source: string | GraphNode;
-  target: string | GraphNode;
-  type: string;
+interface RawEdge {
+  source: string;
+  target: string;
+  relation?: string;
+  confidence?: string;
+  weight?: string;
 }
 
-const NODE_COLORS: Record<string, string> = {
-  service:   '#6366f1',
-  endpoint:  '#22c55e',
-  function:  '#eab308',
-  class:     '#ef4444',
-  table:     '#06b6d4',
-  component: '#f97316',
-  config:    '#8b5cf6',
-  module:    '#ec4899',
-  variable:  '#14b8a6',
-  constant:  '#0ea5e9',
-  command:   '#a855f7',
-  data:      '#64748b',
-  concept:   '#f43f5e',
-  artifact:  '#fb923c',
-  method:    '#facc15',
-  content:   '#84cc16',
-  person:    '#e879f9',
-  other:     '#9ca3af',
-};
-
-/** Map LightRAG entity types to our display types */
-function normalizeType(raw: string): string {
-  const lower = raw.toLowerCase();
-  if (NODE_COLORS[lower]) return lower;
-  // Map similar types
-  if (lower === 'unknown' || lower === '') return 'other';
-  if (lower === 'relationship' || lower === 'event') return 'concept';
-  if (lower === 'organization' || lower === 'location') return 'person';
-  if (lower === 'message' || lower === 'category') return 'data';
-  if (lower === 'file' || lower === 'path' || lower === 'language') return 'module';
-  if (lower === 'model') return 'data';
-  return 'other';
+interface CommunityEntry {
+  cid: string;
+  color: string;
+  label: string;
+  count: number;
 }
 
-/** Get color for a type, with deterministic fallback for unknown types */
-function getColor(type: string): string {
-  if (NODE_COLORS[type]) return NODE_COLORS[type];
-  // Generate a stable color from the type name
-  let hash = 0;
-  for (let i = 0; i < type.length; i++) hash = type.charCodeAt(i) + ((hash << 5) - hash);
-  const h = Math.abs(hash) % 360;
-  return `hsl(${h}, 60%, 55%)`;
+function sanitize(label: string | undefined | null): string {
+  if (!label) return '';
+  return String(label).slice(0, 120);
 }
-
-const ANNOTATION_TYPE_STYLES: Record<string, string> = {
-  note: 'bg-yellow-100 text-yellow-700 dark:bg-yellow-900/30 dark:text-yellow-400',
-  decision: 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400',
-  warning: 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400',
-  todo: 'bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-400',
-};
-
-function NodeAnnotations({ entityName }: { entityName: string }) {
-  const [annotations, setAnnotations] = useState<Annotation[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [showForm, setShowForm] = useState(false);
-  const [formType, setFormType] = useState('note');
-  const [formContent, setFormContent] = useState('');
-  const [submitting, setSubmitting] = useState(false);
-
-  const load = () => {
-    setLoading(true);
-    api.listAnnotations({ entity: entityName })
-      .then(setAnnotations)
-      .catch(console.error)
-      .finally(() => setLoading(false));
-  };
-
-  useEffect(() => { load(); }, [entityName]);
-
-  const handleCreate = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!formContent.trim()) return;
-    setSubmitting(true);
-    try {
-      await api.createAnnotation({ entityName, type: formType, content: formContent.trim() });
-      setFormContent('');
-      setShowForm(false);
-      load();
-    } catch (err) {
-      console.error('Failed to create annotation:', err);
-    } finally {
-      setSubmitting(false);
-    }
-  };
-
-  const handleDelete = async (id: string) => {
-    try {
-      await api.deleteAnnotation(id);
-      load();
-    } catch (err) {
-      console.error('Failed to delete annotation:', err);
-    }
-  };
-
-  return (
-    <div className="mt-4 pt-3 border-t border-[var(--color-border-light)]">
-      <div className="flex items-center justify-between mb-2">
-        <p className="text-xs font-medium text-text flex items-center gap-1.5">
-          <MessageSquare className="w-3 h-3 text-accent" />
-          Notes
-        </p>
-        <button
-          onClick={() => setShowForm(!showForm)}
-          className="p-1 rounded-[var(--radius-sm)] text-muted hover:text-accent hover:bg-[var(--color-hover)] transition-colors"
-          title="Add note"
-        >
-          <Plus className="w-3 h-3" />
-        </button>
-      </div>
-
-      {loading && <Loader2 className="w-3 h-3 animate-spin text-muted mx-auto" />}
-
-      {/* Annotation list */}
-      <div className="space-y-2">
-        {annotations.map((a) => (
-          <div key={a.id} className="group relative rounded-[var(--radius-sm)] border border-[var(--color-border-light)] p-2 bg-[var(--color-bg)]">
-            <div className="flex items-center gap-1.5 mb-1">
-              <span className={cn('inline-block rounded-full px-1.5 py-0 text-[10px] font-medium', ANNOTATION_TYPE_STYLES[a.type] || ANNOTATION_TYPE_STYLES.note)}>
-                {a.type}
-              </span>
-              <button
-                onClick={() => handleDelete(a.id)}
-                className="opacity-0 group-hover:opacity-100 ml-auto p-0.5 text-muted hover:text-red-500 transition-all"
-                title="Delete"
-              >
-                <Trash2 className="w-2.5 h-2.5" />
-              </button>
-            </div>
-            <p className="text-[11px] text-text leading-relaxed">{a.content}</p>
-            <p className="text-[10px] text-muted mt-1">
-              {a.author && <span>{a.author} &middot; </span>}
-              {new Date(a.createdAt).toLocaleDateString()}
-            </p>
-          </div>
-        ))}
-      </div>
-
-      {/* Add form */}
-      {showForm && (
-        <form onSubmit={handleCreate} className="mt-2 space-y-2">
-          <select
-            value={formType}
-            onChange={(e) => setFormType(e.target.value)}
-            className="w-full px-2 py-1 text-[11px] rounded-[var(--radius-sm)] border border-[var(--color-border)] bg-[var(--color-bg)] text-text"
-          >
-            <option value="note">Note</option>
-            <option value="decision">Decision</option>
-            <option value="warning">Warning</option>
-            <option value="todo">Todo</option>
-          </select>
-          <textarea
-            value={formContent}
-            onChange={(e) => setFormContent(e.target.value)}
-            placeholder="Add a note..."
-            rows={3}
-            className="w-full px-2 py-1.5 text-[11px] rounded-[var(--radius-sm)] border border-[var(--color-border)] bg-[var(--color-bg)] text-text resize-none placeholder:text-muted"
-            required
-          />
-          <button
-            type="submit"
-            disabled={submitting || !formContent.trim()}
-            className="w-full px-2 py-1 rounded-[var(--radius-sm)] bg-accent text-white text-[11px] font-medium hover:bg-accent/90 disabled:opacity-50 disabled:cursor-not-allowed"
-          >
-            {submitting ? 'Saving...' : 'Save'}
-          </button>
-        </form>
-      )}
-
-      {!loading && annotations.length === 0 && !showForm && (
-        <p className="text-[10px] text-muted text-center py-1">No notes yet</p>
-      )}
-    </div>
-  );
-}
-
-const NODE_RADII = 14;
-const GLOW_RADIUS = 28;
 
 export function Graph() {
-  const { id } = useParams<{ id: string }>();
-  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const { id: routeProjectId } = useParams<{ id: string }>();
   const containerRef = useRef<HTMLDivElement>(null);
-  const [nodes, setNodes] = useState<GraphNode[]>([]);
-  const [links, setLinks] = useState<GraphLink[]>([]);
-  const [selected, setSelected] = useState<GraphNode | null>(null);
-  const hoveredRef = useRef<GraphNode | null>(null);
-  const [searchQuery, setSearchQuery] = useState('');
-  const [zoom, setZoom] = useState(1);
-  const [offset, setOffset] = useState({ x: 0, y: 0 });
-  const [activeTypes, setActiveTypes] = useState<Set<string>>(new Set());
-  const [showControls, setShowControls] = useState(true);
-  const [heatmapMode, setHeatmapMode] = useState(false);
-  const simulationRef = useRef<d3Force.Simulation<GraphNode, GraphLink> | null>(null);
-  const zoomRef = useRef(zoom);
-  const offsetRef = useRef(offset);
+  const networkRef = useRef<Network | null>(null);
+  const nodesDS = useRef(new DataSet<any>([]));
+  const edgesDS = useRef(new DataSet<any>([]));
 
-  useEffect(() => { zoomRef.current = zoom; }, [zoom]);
-  useEffect(() => { offsetRef.current = offset; }, [offset]);
+  const routeProject = routeProjectId && routeProjectId !== 'all' ? routeProjectId : '';
+  const initialProject =
+    routeProject || (typeof localStorage !== 'undefined' ? (localStorage.getItem(STORAGE_KEY) ?? '') : '');
+
+  const [selectedProject, setSelectedProject] = useState<string>(initialProject);
+  const [loading, setLoading] = useState(false);
+  const [nodes, setNodes] = useState<RawNode[]>([]);
+  const [edges, setEdges] = useState<RawEdge[]>([]);
+  const [stats, setStats] = useState<{ n: number; e: number; c: number }>({ n: 0, e: 0, c: 0 });
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [hiddenCommunities, setHiddenCommunities] = useState<Set<string>>(new Set());
+  const [search, setSearch] = useState('');
+  const [stabilizing, setStabilizing] = useState(false);
+
+  const { data: projects } = useAsyncData(() => api.listProjects(), []);
 
   useEffect(() => {
-    api.getGraph().then((data: any) => {
-      if (data && typeof data === 'object') {
-        const graphNodes: GraphNode[] = (data.nodes || []).map((n: any, i: number) => ({
-          id: n.id || String(i),
-          name: n.name || (Array.isArray(n.labels) ? n.labels[0] : n.label) || n.id || `Node ${i}`,
-          type: normalizeType(n.type || n.properties?.entity_type || n.entity_type || ''),
-        }));
-        const nodeIds = new Set(graphNodes.map((n) => n.id));
-        const graphLinks: GraphLink[] = (data.edges || data.links || [])
-          .filter((e: any) => {
-            const src = e.source || e.from;
-            const tgt = e.target || e.to;
-            return nodeIds.has(src) && nodeIds.has(tgt);
-          })
-          .map((e: any) => ({
-            source: e.source || e.from,
-            target: e.target || e.to,
-            type: e.properties?.keywords || e.type || e.relation || 'related_to',
-          }));
-        setNodes(graphNodes);
-        setLinks(graphLinks);
-        // Init filters from actual types in data
-        const typesInData = new Set(graphNodes.map((n) => n.type));
-        setActiveTypes(typesInData);
+    if (routeProject) setSelectedProject(routeProject);
+  }, [routeProject]);
+
+  useEffect(() => {
+    if (typeof localStorage === 'undefined') return;
+    if (selectedProject) localStorage.setItem(STORAGE_KEY, selectedProject);
+  }, [selectedProject]);
+
+  // Fetch top-hubs graph (nodes + internal edges). This is what graphify's
+  // to_html() feeds to vis.js: a bounded, whole-graph snapshot.
+  useEffect(() => {
+    let cancelled = false;
+    async function run() {
+      setLoading(true);
+      try {
+        const data = await api.getGraphSummary({
+          projectId: selectedProject || undefined,
+          mode: 'hubs',
+          limit: 500,
+        });
+        if (cancelled) return;
+        setNodes((data.nodes ?? []) as RawNode[]);
+        setEdges((data.edges ?? []) as RawEdge[]);
+      } catch (err) {
+        console.error('Failed to load graph:', err);
+      } finally {
+        if (!cancelled) setLoading(false);
       }
-    }).catch((err) => {
-      console.error('Failed to load graph:', err);
-      setNodes([]);
-      setLinks([]);
+    }
+    run();
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedProject]);
+
+  // Derive graphify-style per-node attributes (degree, color, size, label-visibility).
+  const prepared = useMemo(() => {
+    const degree: Record<string, number> = {};
+    for (const e of edges) {
+      degree[e.source] = (degree[e.source] ?? 0) + 1;
+      degree[e.target] = (degree[e.target] ?? 0) + 1;
+    }
+    const maxDeg = Math.max(1, ...Object.values(degree));
+
+    const nodeIndex: Record<string, RawNode & { deg: number; color: string; size: number; fontSize: number; cid: string }> = {};
+    const communityCount: Record<string, number> = {};
+
+    for (const n of nodes) {
+      const deg = Number(n.degree ?? degree[n.id] ?? 0);
+      const cid = String(n.community ?? 'none');
+      const cidx = parseInt(cid, 10);
+      const color = COMMUNITY_COLORS[(Number.isFinite(cidx) ? cidx : cid.charCodeAt(0)) % COMMUNITY_COLORS.length];
+      // graphify: size = 10 + 30 * (deg / maxDeg)
+      const size = Math.round((10 + 30 * (deg / maxDeg)) * 10) / 10;
+      // Label visible for connected nodes; biggest hubs get noticeably larger text.
+      const ratio = deg / maxDeg;
+      const fontSize = ratio >= 0.15 ? Math.round(12 + 14 * ratio) : 0;
+      nodeIndex[n.id] = { ...n, deg, color, size, fontSize, cid };
+      communityCount[cid] = (communityCount[cid] ?? 0) + 1;
+    }
+
+    const legend: CommunityEntry[] = Object.entries(communityCount)
+      .map(([cid, count]) => {
+        const cidx = parseInt(cid, 10);
+        const color = COMMUNITY_COLORS[(Number.isFinite(cidx) ? cidx : cid.charCodeAt(0)) % COMMUNITY_COLORS.length];
+        return { cid, color, label: cid === 'none' ? 'Unclustered' : `Community ${cid}`, count };
+      })
+      .sort((a, b) => b.count - a.count);
+
+    return { nodeIndex, legend, degree };
+  }, [nodes, edges]);
+
+  // Initialize vis.Network once.
+  useEffect(() => {
+    if (!containerRef.current || networkRef.current) return;
+
+    // Physics & interaction settings copied verbatim from graphify's to_html().
+    const options: Options = {
+      physics: {
+        enabled: true,
+        // barnesHut is quadtree-based and respects node mass/size, so big hubs
+        // repel each other much more strongly than forceAtlas2Based does.
+        solver: 'barnesHut',
+        barnesHut: {
+          gravitationalConstant: -8000,
+          centralGravity: 0.25,
+          springLength: 140,
+          springConstant: 0.04,
+          damping: 0.6,
+          avoidOverlap: 1.0,
+        },
+        stabilization: { enabled: true, iterations: 300, fit: true },
+      },
+      interaction: {
+        hover: true,
+        tooltipDelay: 100,
+        hideEdgesOnDrag: true,
+        navigationButtons: false,
+        keyboard: false,
+      },
+      nodes: { shape: 'dot', borderWidth: 1.5 },
+      edges: {
+        smooth: { enabled: true, type: 'continuous', roundness: 0.2 },
+        selectionWidth: 3,
+      },
+    };
+
+    const network = new Network(
+      containerRef.current,
+      { nodes: nodesDS.current as any, edges: edgesDS.current as any },
+      options,
+    );
+    networkRef.current = network;
+
+    network.once('stabilizationIterationsDone', () => {
+      network.setOptions({ physics: { enabled: false } });
+      setStabilizing(false);
     });
-  }, [id]);
 
-  const draw = useCallback((
-    ctx: CanvasRenderingContext2D,
-    width: number,
-    height: number,
-    nodeList: GraphNode[],
-    linkList: GraphLink[],
-    currentZoom: number,
-    currentOffset: { x: number; y: number },
-    currentSelected: GraphNode | null,
-    currentSearch: string,
-    currentActiveTypes: Set<string>,
-    currentHeatmap?: boolean,
-    degreeMap?: Map<string, number>,
-  ) => {
-    // Dark background
-    ctx.fillStyle = '#0d1117';
-    ctx.fillRect(0, 0, width, height);
-
-    ctx.save();
-    ctx.translate(currentOffset.x, currentOffset.y);
-    ctx.scale(currentZoom, currentZoom);
-
-    const visibleNodes = nodeList.filter((n) => currentActiveTypes.has(n.type));
-    const visibleNodeIds = new Set(visibleNodes.map((n) => n.id));
-
-    // Draw links
-    for (const link of linkList) {
-      const source = link.source as GraphNode;
-      const target = link.target as GraphNode;
-      if (!visibleNodeIds.has(source.id) || !visibleNodeIds.has(target.id)) continue;
-      if (source.x == null || source.y == null || target.x == null || target.y == null) continue;
-
-      ctx.beginPath();
-      ctx.moveTo(source.x, source.y);
-      ctx.lineTo(target.x, target.y);
-      ctx.strokeStyle = 'rgba(140,160,180,0.35)';
-      ctx.lineWidth = 1.5 / currentZoom;
-      ctx.stroke();
-    }
-
-    // Draw nodes
-    for (const node of visibleNodes) {
-      if (node.x == null || node.y == null) continue;
-      const degree = degreeMap?.get(node.id) ?? 0;
-      const color = currentHeatmap
-        ? (degree > 10 ? '#ef4444' : degree > 5 ? '#f97316' : degree > 2 ? '#eab308' : degree > 0 ? '#3b82f6' : '#6b7280')
-        : getColor(node.type);
-      const isSelected = currentSelected?.id === node.id;
-      const isSearchMatch = currentSearch.length > 1
-        && node.name.toLowerCase().includes(currentSearch.toLowerCase());
-
-      // Glow for selected / search match
-      if (isSelected || isSearchMatch) {
-        const grad = ctx.createRadialGradient(node.x, node.y, NODE_RADII * 0.5, node.x, node.y, GLOW_RADIUS);
-        grad.addColorStop(0, `${color}44`);
-        grad.addColorStop(1, `${color}00`);
-        ctx.beginPath();
-        ctx.arc(node.x, node.y, GLOW_RADIUS, 0, 2 * Math.PI);
-        ctx.fillStyle = grad;
-        ctx.fill();
-      }
-
-      // Node circle
-      ctx.beginPath();
-      ctx.arc(node.x, node.y, NODE_RADII, 0, 2 * Math.PI);
-      ctx.fillStyle = color;
-      ctx.fill();
-
-      // White ring
-      ctx.strokeStyle = isSelected ? '#fff' : 'rgba(255,255,255,0.6)';
-      ctx.lineWidth = isSelected ? 2.5 / currentZoom : 1.5 / currentZoom;
-      ctx.stroke();
-
-      // Label — progressive disclosure based on degree and zoom
-      const isHovered = hoveredRef.current?.id === node.id;
-      // Each node needs a minimum zoom level to show its label, based on its degree
-      // Only the very top nodes (degree 10+) show at low zoom, rest require progressively more zoom
-      const minZoomForLabel = degree >= 10 ? 0.05
-        : degree >= 6 ? 0.3
-        : degree >= 4 ? 0.8
-        : degree >= 2 ? 1.5
-        : degree >= 1 ? 2.5
-        : 4.0;
-      const showLabel = isSelected || isSearchMatch || isHovered || currentZoom >= minZoomForLabel;
-      if (showLabel) {
-        // Scale font inversely to zoom so labels stay readable at any zoom level
-        // Clamp to reasonable range to avoid absurd sizes
-        const fontSize = Math.min(200 / currentZoom, Math.max(10, 14 / currentZoom));
-        ctx.font = `${isSelected || isHovered ? 600 : 400} ${fontSize}px Inter, sans-serif`;
-        const label = node.name;
-        const textW = ctx.measureText(label).width;
-        const labelGap = NODE_RADII + fontSize * 0.4;
-        // Background pill for hover/selection
-        if (isHovered || isSelected) {
-          ctx.fillStyle = 'rgba(13,17,23,0.85)';
-          ctx.fillRect(node.x - textW / 2 - 4, node.y - labelGap - fontSize * 0.8, textW + 8, fontSize * 1.1);
-        }
-        // Opacity: fade in as zoom passes the threshold
-        const fadeRatio = isHovered || isSelected ? 1 : Math.min(1, (currentZoom - minZoomForLabel) / minZoomForLabel);
-        const alpha = Math.round(Math.max(0.5, fadeRatio) * 255).toString(16).padStart(2, '0');
-        ctx.fillStyle = isSelected || isHovered ? '#ffffff' : `#c9d1d9${alpha}`;
-        ctx.textAlign = 'center';
-        ctx.fillText(label, node.x, node.y - labelGap);
-      }
-    }
-
-    ctx.restore();
-  }, []);
-
-  // Compute degree map for heatmap mode
-  const degreeMap = useMemo(() => {
-    const map = new Map<string, number>();
-    for (const n of nodes) map.set(n.id, 0);
-    for (const l of links) {
-      const srcId = typeof l.source === 'string' ? l.source : (l.source as GraphNode).id;
-      const tgtId = typeof l.target === 'string' ? l.target : (l.target as GraphNode).id;
-      map.set(srcId, (map.get(srcId) || 0) + 1);
-      map.set(tgtId, (map.get(tgtId) || 0) + 1);
-    }
-    return map;
-  }, [nodes, links]);
-
-  useEffect(() => {
-    if (nodes.length === 0) return;
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return;
-
-    const container = containerRef.current;
-    const width = canvas.width = container?.clientWidth || 900;
-    const height = canvas.height = 560;
-
-    const simulation = d3Force.forceSimulation<GraphNode>(nodes)
-      .force('link', d3Force.forceLink<GraphNode, GraphLink>(links).id((d) => d.id).distance(120))
-      .force('charge', d3Force.forceManyBody().strength(-300))
-      .force('center', d3Force.forceCenter(width / 2, height / 2))
-      .force('collision', d3Force.forceCollide().radius(32));
-
-    simulationRef.current = simulation;
-
-    const redraw = () => {
-      draw(ctx, width, height, nodes, links, zoomRef.current, offsetRef.current, selected, searchQuery, activeTypes, heatmapMode, degreeMap);
-    };
-
-    simulation.on('tick', redraw);
-
-    // Click detection
-    canvas.onclick = (e) => {
-      const rect = canvas.getBoundingClientRect();
-      const mx = (e.clientX - rect.left - offsetRef.current.x) / zoomRef.current;
-      const my = (e.clientY - rect.top - offsetRef.current.y) / zoomRef.current;
-      const clicked = nodes.find((n) => n.x && n.y && Math.hypot(n.x - mx, n.y - my) < NODE_RADII + 4);
-      setSelected(clicked || null);
-    };
-
-    // Drag nodes + pan canvas
-    let dragNode: GraphNode | null = null;
-    let isPanning = false;
-    let panStart = { x: 0, y: 0 };
-
-    canvas.onmousedown = (e) => {
-      const rect = canvas.getBoundingClientRect();
-      const mx = (e.clientX - rect.left - offsetRef.current.x) / zoomRef.current;
-      const my = (e.clientY - rect.top - offsetRef.current.y) / zoomRef.current;
-      dragNode = nodes.find((n) => n.x && n.y && Math.hypot(n.x - mx, n.y - my) < NODE_RADII + 4) || null;
-      if (dragNode) {
-        dragNode.fx = dragNode.x;
-        dragNode.fy = dragNode.y;
-        simulation.alphaTarget(0.3).restart();
-        canvas.style.cursor = 'grabbing';
+    network.on('click', (params) => {
+      if (params.nodes && params.nodes.length > 0) {
+        setSelectedId(String(params.nodes[0]));
       } else {
-        // Pan mode — drag the whole canvas
-        isPanning = true;
-        panStart = { x: e.clientX - offsetRef.current.x, y: e.clientY - offsetRef.current.y };
-        canvas.style.cursor = 'grabbing';
+        setSelectedId(null);
       }
-    };
-    canvas.onmousemove = (e) => {
-      if (dragNode) {
-        const rect = canvas.getBoundingClientRect();
-        dragNode.fx = (e.clientX - rect.left - offsetRef.current.x) / zoomRef.current;
-        dragNode.fy = (e.clientY - rect.top - offsetRef.current.y) / zoomRef.current;
-      } else if (isPanning) {
-        const newOffset = { x: e.clientX - panStart.x, y: e.clientY - panStart.y };
-        offsetRef.current = newOffset;
-        setOffset(newOffset);
-      } else {
-        // Hover detection
-        const rect = canvas.getBoundingClientRect();
-        const mx = (e.clientX - rect.left - offsetRef.current.x) / zoomRef.current;
-        const my = (e.clientY - rect.top - offsetRef.current.y) / zoomRef.current;
-        const found = nodes.find((n) => n.x && n.y && Math.hypot(n.x - mx, n.y - my) < NODE_RADII + 4) || null;
-        if (found?.id !== hoveredRef.current?.id) {
-          hoveredRef.current = found;
-          canvas.style.cursor = found ? 'pointer' : 'grab';
-          redraw();
-        }
-      }
-    };
-    canvas.onmouseup = () => {
-      if (dragNode) { dragNode.fx = null; dragNode.fy = null; simulation.alphaTarget(0); }
-      dragNode = null;
-      isPanning = false;
-      canvas.style.cursor = 'grab';
-    };
-    canvas.onmouseleave = () => {
-      if (dragNode) { dragNode.fx = null; dragNode.fy = null; simulation.alphaTarget(0); }
-      dragNode = null;
-      hoveredRef.current = null;
-      isPanning = false;
-      canvas.style.cursor = 'grab';
-    };
+    });
 
-    // Wheel zoom — centered on mouse position
-    const onWheel = (e: WheelEvent) => {
-      e.preventDefault();
-      const rect = canvas.getBoundingClientRect();
-      const mouseX = e.clientX - rect.left;
-      const mouseY = e.clientY - rect.top;
-      const delta = e.deltaY > 0 ? 0.9 : 1.1;
-      const oldZoom = zoomRef.current;
-      const newZoom = Math.min(10, Math.max(0.001, oldZoom * delta));
-      const scale = newZoom / oldZoom;
-      // Adjust offset so the point under the mouse stays fixed
-      const newOffset = {
-        x: mouseX - scale * (mouseX - offsetRef.current.x),
-        y: mouseY - scale * (mouseY - offsetRef.current.y),
-      };
-      offsetRef.current = newOffset;
-      setOffset(newOffset);
-      setZoom(newZoom);
-    };
-    canvas.addEventListener('wheel', onWheel, { passive: false });
+    // Enlarge the hovered node's label and restore it on blur.
+    // We stash the pre-hover font in a ref-keyed map so we restore exactly
+    // the per-node font size chosen during the prepared-data pass.
+    const hoverFontRestore: Record<string, any> = {};
+    network.on('hoverNode', (params) => {
+      const id = String(params.node);
+      const current = nodesDS.current.get(id) as any;
+      if (!current) return;
+      hoverFontRestore[id] = current.font;
+      nodesDS.current.update({
+        id,
+        font: { color: '#ffffff', size: 28, bold: true, strokeWidth: 4, strokeColor: '#0f0f1a' },
+      });
+      if (containerRef.current) containerRef.current.style.cursor = 'pointer';
+    });
+    network.on('blurNode', (params) => {
+      const id = String(params.node);
+      const restored = hoverFontRestore[id] ?? { color: '#ffffff', size: 0 };
+      delete hoverFontRestore[id];
+      nodesDS.current.update({ id, font: restored });
+      if (containerRef.current) containerRef.current.style.cursor = 'default';
+    });
 
     return () => {
-      simulation.stop();
-      canvas.removeEventListener('wheel', onWheel);
+      network.destroy();
+      networkRef.current = null;
     };
-  }, [nodes, links, draw]);
+  }, []);
 
-  // Redraw when selection / zoom / offset / search / activeTypes change
+  // Push prepared data into vis DataSets whenever inputs change.
   useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return;
-    draw(ctx, canvas.width, canvas.height, nodes, links, zoom, offset, selected, searchQuery, activeTypes, heatmapMode, degreeMap);
-  }, [selected, zoom, offset, searchQuery, activeTypes, heatmapMode, nodes, links, draw, degreeMap]);
+    const visNodes = nodes.map(n => {
+      const p = prepared.nodeIndex[n.id];
+      const color = p?.color ?? '#888';
+      // Give big hubs much more physical "mass" so they repel each other
+      // harder — avoids the tight orange cluster where 5+ huge nodes overlap.
+      const size = p?.size ?? 10;
+      const mass = 1 + Math.pow(size / 10, 2);
+      return {
+        id: n.id,
+        label: sanitize(n.label || n.id),
+        shape: 'dot',
+        size,
+        mass,
+        color: {
+          background: color,
+          border: color,
+          highlight: { background: '#ffffff', border: color },
+        },
+        font: { color: '#ffffff', size: p?.fontSize ?? 0 },
+        title: `${sanitize(n.label || n.id)}\nType: ${n.type ?? '—'}\nCommunity: ${n.community ?? '—'}\nDegree: ${p?.deg ?? 0}`,
+        hidden: hiddenCommunities.has(p?.cid ?? 'none'),
+      };
+    });
 
-  const handleZoomIn = () => setZoom((z) => Math.min(10, z * 1.2));
-  const handleZoomOut = () => setZoom((z) => Math.max(0.01, z / 1.2));
-  const handleReset = () => { setZoom(1); setOffset({ x: 0, y: 0 }); };
+    const visEdges = edges.map((e, i) => {
+      const confidence = e.confidence ?? 'EXTRACTED';
+      const extracted = confidence === 'EXTRACTED';
+      return {
+        id: `e-${i}`,
+        from: e.source,
+        to: e.target,
+        label: '',
+        title: `${e.relation ?? 'related'} [${confidence}]`,
+        dashes: !extracted,
+        width: extracted ? 2 : 1,
+        color: { color: '#888888', opacity: extracted ? 0.7 : 0.35 },
+        arrows: { to: { enabled: true, scaleFactor: 0.5 } },
+      };
+    });
 
-  const toggleType = (type: string) => {
-    setActiveTypes((prev) => {
+    nodesDS.current.clear();
+    edgesDS.current.clear();
+    nodesDS.current.add(visNodes);
+    edgesDS.current.add(visEdges);
+
+    setStats({ n: visNodes.length, e: visEdges.length, c: prepared.legend.length });
+
+    if (networkRef.current && visNodes.length > 0) {
+      networkRef.current.setOptions({ physics: { enabled: true } });
+      setStabilizing(true);
+    }
+  }, [nodes, edges, prepared, hiddenCommunities]);
+
+  // Selected-node derived data (neighbors, metadata) for the info panel.
+  const selectedInfo = useMemo(() => {
+    if (!selectedId) return null;
+    const n = nodes.find(x => x.id === selectedId);
+    if (!n) return null;
+    const p = prepared.nodeIndex[n.id];
+    const neighbors = new Set<string>();
+    for (const e of edges) {
+      if (e.source === selectedId) neighbors.add(e.target);
+      else if (e.target === selectedId) neighbors.add(e.source);
+    }
+    const neighborList = Array.from(neighbors)
+      .map(nid => {
+        const nb = nodes.find(x => x.id === nid);
+        const color = prepared.nodeIndex[nid]?.color ?? '#555';
+        return { id: nid, label: nb?.label ?? nid, color };
+      })
+      .sort((a, b) => a.label.localeCompare(b.label));
+    return {
+      node: n,
+      color: p?.color,
+      cid: p?.cid,
+      deg: p?.deg ?? 0,
+      neighbors: neighborList,
+    };
+  }, [selectedId, nodes, edges, prepared]);
+
+  // Search results (label substring, top 20).
+  const searchMatches = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    if (!q) return [];
+    return nodes
+      .filter(n => (n.label || '').toLowerCase().includes(q))
+      .slice(0, 20);
+  }, [search, nodes]);
+
+  const focusNode = (id: string) => {
+    networkRef.current?.focus(id, { scale: 1.4, animation: { duration: 400, easingFunction: 'easeInOutQuad' } });
+    networkRef.current?.selectNodes([id]);
+    setSelectedId(id);
+  };
+
+  const toggleCommunity = (cid: string) => {
+    setHiddenCommunities(prev => {
       const next = new Set(prev);
-      if (next.has(type)) next.delete(type);
-      else next.add(type);
+      if (next.has(cid)) next.delete(cid);
+      else next.add(cid);
       return next;
     });
   };
 
-  // Derive filter types from actual nodes, sorted by count descending
-  const entityTypes = (() => {
-    const counts: Record<string, number> = {};
-    for (const n of nodes) {
-      counts[n.type] = (counts[n.type] || 0) + 1;
-    }
-    return Object.entries(counts)
-      .sort((a, b) => b[1] - a[1])
-      .map(([type]) => type);
-  })();
-
-  // Search highlight: find first match and center it
-  const searchMatch = searchQuery.length > 1
-    ? nodes.find((n) => n.name.toLowerCase().includes(searchQuery.toLowerCase()))
-    : null;
-
   return (
-    <div className="space-y-4">
-      {/* Back + title */}
-      <div className="flex items-center gap-3">
-        <Link to="/" className="inline-flex items-center gap-1.5 text-sm text-muted hover:text-accent transition-colors">
-          <ArrowLeft className="w-4 h-4" />
-          Back
-        </Link>
-        <h1 className="text-6xl font-bold text-text">Knowledge Graph</h1>
-        {nodes.length > 0 && (
-          <span className="text-xs text-muted bg-[var(--color-hover)] px-2 py-1 rounded-full">
-            {nodes.length} nodes · {links.length} edges
-          </span>
+    // graphify layout: flex row, graph canvas left, 280px sidebar right.
+    // Dark theme mirrors graphify's #0f0f1a / #1a1a2e palette.
+    <div className="flex h-[calc(100vh-10rem)] min-h-[800px] rounded-xl overflow-hidden border border-[#2a2a4e]">
+      {/* Graph canvas */}
+      <div className="flex-1 relative bg-[#0f0f1a]">
+        {loading && (
+          <div className="absolute inset-0 flex flex-col items-center justify-center text-[#aaa] z-10">
+            <Loader2 className="w-8 h-8 animate-spin mb-2" />
+            <p className="text-xs">Loading graph…</p>
+          </div>
         )}
+        {stabilizing && !loading && (
+          <div className="absolute top-3 left-3 px-2 py-1 bg-[#1a1a2e] border border-[#2a2a4e] rounded text-[11px] text-[#aaa] z-10">
+            stabilizing…
+          </div>
+        )}
+        {!loading && nodes.length === 0 && (
+          <div className="absolute inset-0 flex items-center justify-center text-[#666] text-sm">
+            No graph data. Select a project or run a scan.
+          </div>
+        )}
+        <div ref={containerRef} className="w-full h-full" />
       </div>
 
-      {/* Main canvas card */}
-      <div className="bg-card rounded-[var(--radius-lg)] shadow-[var(--shadow-md)] border border-[var(--color-border-light)] overflow-hidden">
-        {/* Toolbar */}
-        <div className="px-4 py-3 border-b border-[var(--color-border-light)] flex items-center gap-3 flex-wrap">
-          {/* Search */}
-          <div className="relative flex-1 min-w-[180px] max-w-xs">
-            <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted" />
-            <input
-              type="text"
-              placeholder="Search entity..."
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              className="w-full pl-8 pr-8 py-1.5 text-xs rounded-[var(--radius-md)] border border-[var(--color-border)] bg-[var(--color-bg)] text-text placeholder:text-muted focus:outline-none focus:border-accent transition-colors"
-            />
-            {searchQuery && (
-              <button
-                onClick={() => setSearchQuery('')}
-                className="absolute right-2 top-1/2 -translate-y-1/2 text-muted hover:text-text"
-              >
-                <X className="w-3 h-3" />
-              </button>
-            )}
-          </div>
-          {searchMatch && (
-            <span className="text-xs text-success font-medium">
-              Found: {searchMatch.name}
-            </span>
-          )}
-          <div className="flex-1" />
-          {/* Zoom controls */}
-          <div className="flex items-center gap-1">
-            <button
-              onClick={handleZoomOut}
-              className="w-7 h-7 rounded-[var(--radius-sm)] border border-[var(--color-border)] flex items-center justify-center hover:bg-[var(--color-hover)] transition-colors text-muted"
-            >
-              <ZoomOut className="w-3.5 h-3.5" />
-            </button>
-            <span className="text-xs text-muted w-12 text-center font-mono">{Math.round(zoom * 100)}%</span>
-            <button
-              onClick={handleZoomIn}
-              className="w-7 h-7 rounded-[var(--radius-sm)] border border-[var(--color-border)] flex items-center justify-center hover:bg-[var(--color-hover)] transition-colors text-muted"
-            >
-              <ZoomIn className="w-3.5 h-3.5" />
-            </button>
-            <button
-              onClick={handleReset}
-              className="w-7 h-7 rounded-[var(--radius-sm)] border border-[var(--color-border)] flex items-center justify-center hover:bg-[var(--color-hover)] transition-colors text-muted ml-1"
-            >
-              <RotateCcw className="w-3.5 h-3.5" />
-            </button>
-          </div>
-          <button
-            onClick={() => setHeatmapMode((v) => !v)}
-            title="Toggle activity heatmap"
-            className={cn(
-              'w-7 h-7 rounded-[var(--radius-sm)] border flex items-center justify-center transition-colors',
-              heatmapMode
-                ? 'border-accent bg-[color-mix(in_srgb,var(--color-accent)_10%,transparent)] text-accent'
-                : 'border-[var(--color-border)] hover:bg-[var(--color-hover)] text-muted'
-            )}
+      {/* Sidebar (graphify parity: search, info, legend, stats) */}
+      <div className="w-[280px] bg-[#1a1a2e] border-l border-[#2a2a4e] flex flex-col text-[#e0e0e0]">
+        {/* Project selector (Cortex-specific) */}
+        <div className="p-3 border-b border-[#2a2a4e]">
+          <select
+            value={selectedProject}
+            onChange={e => setSelectedProject(e.target.value)}
+            className="w-full bg-[#0f0f1a] border border-[#3a3a5e] text-[#e0e0e0] px-2.5 py-1.5 rounded text-[13px] outline-none focus:border-[#4E79A7]"
           >
-            <Flame className="w-3.5 h-3.5" />
-          </button>
-          <button
-            onClick={() => setShowControls((v) => !v)}
-            className={cn(
-              'w-7 h-7 rounded-[var(--radius-sm)] border flex items-center justify-center transition-colors',
-              showControls
-                ? 'border-accent bg-[color-mix(in_srgb,var(--color-accent)_10%,transparent)] text-accent'
-                : 'border-[var(--color-border)] hover:bg-[var(--color-hover)] text-muted'
-            )}
-          >
-            <SlidersHorizontal className="w-3.5 h-3.5" />
-          </button>
+            <option value="">All projects</option>
+            {(projects ?? []).map((p: Project) => (
+              <option key={p.id} value={p.id}>{p.name}</option>
+            ))}
+          </select>
         </div>
 
-        {/* Canvas + side panels */}
-        <div className="flex" style={{ height: 560 }}>
-          {/* Canvas */}
-          <div ref={containerRef} className="flex-1 relative overflow-hidden bg-[var(--color-bg)]">
-            <canvas
-              ref={canvasRef}
-              style={{ width: '100%', height: '100%', cursor: 'grab', display: 'block' }}
-            />
-            {nodes.length === 0 && (
-              <div className="absolute inset-0 flex items-center justify-center">
-                <div className="text-center">
-                  <p className="text-sm text-muted">No graph data yet</p>
-                  <p className="text-xs text-light mt-1">Scan repositories to populate the knowledge graph</p>
-                </div>
-              </div>
-            )}
-          </div>
-
-          {/* Controls panel */}
-          {showControls && (
-            <div className="w-52 border-l border-[var(--color-border-light)] p-4 bg-card flex flex-col gap-4 overflow-y-auto flex-shrink-0">
-              <div>
-                <p className="text-xs font-semibold text-text mb-2 flex items-center gap-1.5">
-                  <SlidersHorizontal className="w-3.5 h-3.5 text-accent" />
-                  Filter by Type
-                </p>
-                <div className="space-y-1.5">
-                  {entityTypes.map((type) => (
-                    <label key={type} className="flex items-center gap-2 cursor-pointer group">
-                      <input
-                        type="checkbox"
-                        checked={activeTypes.has(type)}
-                        onChange={() => toggleType(type)}
-                        className="sr-only"
-                      />
-                      <div className={cn(
-                        'w-4 h-4 rounded flex items-center justify-center border transition-colors',
-                        activeTypes.has(type)
-                          ? 'border-transparent'
-                          : 'border-[var(--color-border)] bg-white'
-                      )}
-                        style={activeTypes.has(type) ? { background: getColor(type) } : {}}
-                      >
-                        {activeTypes.has(type) && (
-                          <svg className="w-2.5 h-2.5 text-white" fill="none" viewBox="0 0 10 10">
-                            <path d="M2 5l2.5 2.5L8 3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
-                          </svg>
-                        )}
-                      </div>
-                      <span className="flex items-center gap-1.5 text-xs text-text group-hover:text-accent transition-colors">
-                        <Circle className="w-2 h-2" style={{ color: getColor(type), fill: getColor(type) }} />
-                        {type}
-                        <span className="text-[10px] text-muted font-mono">
-                          {nodes.filter((n) => n.type === type).length}
-                        </span>
-                      </span>
-                    </label>
-                  ))}
-                </div>
-              </div>
-
-              <div className="pt-3 border-t border-[var(--color-border-light)]">
-                <button
-                  onClick={handleReset}
-                  className="w-full flex items-center justify-center gap-1.5 py-1.5 rounded-[var(--radius-sm)] border border-[var(--color-border)] text-xs text-muted hover:bg-[var(--color-hover)] transition-colors"
-                >
-                  <RotateCcw className="w-3 h-3" />
-                  Reset View
-                </button>
-              </div>
-            </div>
-          )}
-
-          {/* Selected node panel */}
-          {selected && (
-            <div className="w-60 border-l border-[var(--color-border-light)] p-4 bg-card overflow-y-auto flex-shrink-0">
-              <div className="flex items-center justify-between mb-3">
-                <p className="text-xs font-semibold text-text">Node Details</p>
-                <button
-                  onClick={() => setSelected(null)}
-                  className="text-muted hover:text-text transition-colors"
-                >
-                  <X className="w-3.5 h-3.5" />
-                </button>
-              </div>
-              <div
-                className="w-10 h-10 rounded-full mb-3 flex items-center justify-center shadow-[var(--shadow-sm)]"
-                style={{ background: getColor(selected.type) }}
-              >
-                <Maximize2 className="w-4 h-4 text-white" />
-              </div>
-              <h3 className="text-sm font-semibold text-text break-words">{selected.name}</h3>
-              <div className="mt-3 space-y-2">
-                <div className="flex items-center justify-between">
-                  <span className="text-xs text-muted">Type</span>
-                  <span
-                    className="text-xs font-semibold px-2 py-0.5 rounded-full text-white"
-                    style={{ background: getColor(selected.type) }}
+        {/* Search */}
+        <div className="p-3 border-b border-[#2a2a4e] relative">
+          <input
+            type="text"
+            placeholder="Search nodes..."
+            value={search}
+            onChange={e => setSearch(e.target.value)}
+            className="w-full bg-[#0f0f1a] border border-[#3a3a5e] text-[#e0e0e0] px-2.5 py-1.5 rounded text-[13px] outline-none focus:border-[#4E79A7]"
+          />
+          {searchMatches.length > 0 && (
+            <div className="absolute left-3 right-3 top-full mt-1 max-h-[200px] overflow-y-auto bg-[#0f0f1a] border border-[#3a3a5e] rounded shadow-lg z-20">
+              {searchMatches.map(m => {
+                const p = prepared.nodeIndex[m.id];
+                return (
+                  <button
+                    key={m.id}
+                    onClick={() => {
+                      focusNode(m.id);
+                      setSearch('');
+                    }}
+                    className="w-full text-left px-2 py-1 text-[12px] truncate hover:bg-[#2a2a4e] border-l-[3px]"
+                    style={{ borderLeftColor: p?.color ?? '#555' }}
                   >
-                    {selected.type}
-                  </span>
-                </div>
-                <div className="flex items-center justify-between">
-                  <span className="text-xs text-muted">ID</span>
-                  <span className="text-xs font-mono text-text">{selected.id}</span>
-                </div>
-                {selected.x != null && (
-                  <div className="flex items-center justify-between">
-                    <span className="text-xs text-muted">Position</span>
-                    <span className="text-xs font-mono text-muted">
-                      {Math.round(selected.x)}, {Math.round(selected.y ?? 0)}
-                    </span>
-                  </div>
-                )}
-              </div>
-              <div className="mt-4 pt-3 border-t border-[var(--color-border-light)]">
-                <p className="text-xs font-medium text-text mb-2">Connected to</p>
-                <div className="space-y-1">
-                  {links
-                    .filter((l) => {
-                      const src = (l.source as GraphNode).id ?? l.source;
-                      const tgt = (l.target as GraphNode).id ?? l.target;
-                      return src === selected.id || tgt === selected.id;
-                    })
-                    .slice(0, 6)
-                    .map((l, i) => {
-                      const src = l.source as GraphNode;
-                      const tgt = l.target as GraphNode;
-                      const other = (src.id ?? src) === selected.id ? tgt : src;
-                      const otherName = typeof other === 'string' ? other : other.name;
-                      const otherType = typeof other === 'string' ? 'default' : other.type;
-                      return (
-                        <div key={i} className="flex items-center gap-1.5 text-xs text-muted">
-                          <Circle
-                            className="w-2 h-2 flex-shrink-0"
-                            style={{ color: getColor(otherType), fill: getColor(otherType) }}
-                          />
-                          <span className="truncate">{otherName}</span>
-                          <span className="text-light text-xs flex-shrink-0">· {l.type}</span>
-                        </div>
-                      );
-                    })}
-                </div>
-              </div>
-              <NodeAnnotations entityName={selected.name} />
+                    {m.label}
+                  </button>
+                );
+              })}
             </div>
           )}
         </div>
-      </div>
 
-      {/* Legend */}
-      <div className="bg-card rounded-[var(--radius-lg)] shadow-[var(--shadow-sm)] border border-[var(--color-border-light)] px-5 py-3">
-        {heatmapMode ? (
-          <div className="flex items-center gap-3">
-            <span className="text-xs font-semibold text-muted uppercase tracking-wide">Activity Heatmap</span>
-            <span className="text-xs text-muted">Low connections</span>
-            <div
-              className="h-3 flex-1 max-w-xs rounded-full"
-              style={{ background: 'linear-gradient(to right, #6b7280, #3b82f6, #eab308, #f97316, #ef4444)' }}
-            />
-            <span className="text-xs text-muted">High connections</span>
-            <div className="flex items-center gap-3 ml-4 text-[10px] text-muted">
-              <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full inline-block" style={{ background: '#6b7280' }} />0</span>
-              <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full inline-block" style={{ background: '#3b82f6' }} />1-2</span>
-              <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full inline-block" style={{ background: '#eab308' }} />3-5</span>
-              <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full inline-block" style={{ background: '#f97316' }} />6-10</span>
-              <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full inline-block" style={{ background: '#ef4444' }} />11+</span>
+        {/* Info panel */}
+        <div className="p-3.5 border-b border-[#2a2a4e] min-h-[140px]">
+          <h3 className="text-[13px] text-[#aaa] uppercase tracking-wider mb-2">Node Info</h3>
+          {selectedInfo ? (
+            <div className="text-[13px] text-[#ccc] leading-relaxed">
+              <div className="mb-1"><b className="text-[#e0e0e0]">{selectedInfo.node.label}</b></div>
+              <div className="mb-1">Type: {selectedInfo.node.type ?? 'unknown'}</div>
+              <div className="mb-1">Community: {selectedInfo.cid === 'none' ? 'Unclustered' : selectedInfo.cid}</div>
+              <div className="mb-1 truncate" title={selectedInfo.node.source_file}>
+                Source: {selectedInfo.node.source_file ?? '—'}
+              </div>
+              <div className="mb-1">Degree: {selectedInfo.deg}</div>
+              {selectedInfo.neighbors.length > 0 && (
+                <>
+                  <div className="mt-2 text-[11px] text-[#aaa]">
+                    Neighbors ({selectedInfo.neighbors.length})
+                  </div>
+                  <div className="mt-1 max-h-[160px] overflow-y-auto">
+                    {selectedInfo.neighbors.map(nb => (
+                      <button
+                        key={nb.id}
+                        onClick={() => focusNode(nb.id)}
+                        className="block w-full text-left text-[12px] px-1.5 py-0.5 my-0.5 rounded truncate border-l-[3px] hover:bg-[#2a2a4e]"
+                        style={{ borderLeftColor: nb.color }}
+                        title={nb.label}
+                      >
+                        {nb.label}
+                      </button>
+                    ))}
+                  </div>
+                </>
+              )}
             </div>
-          </div>
-        ) : (
-          <div className="flex items-center gap-2 flex-wrap">
-            <span className="text-xs font-semibold text-muted uppercase tracking-wide mr-2">Legend</span>
-            {entityTypes.map((type) => (
+          ) : (
+            <span className="text-[#555] italic text-[13px]">Click a node to inspect it</span>
+          )}
+        </div>
+
+        {/* Legend */}
+        <div className="flex-1 overflow-y-auto p-3">
+          <h3 className="text-[13px] text-[#aaa] uppercase tracking-wider mb-2.5">Communities</h3>
+          {prepared.legend.map(c => {
+            const dimmed = hiddenCommunities.has(c.cid);
+            return (
               <button
-                key={type}
-                onClick={() => toggleType(type)}
-                className={cn(
-                  'inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium transition-all',
-                  activeTypes.has(type)
-                    ? 'opacity-100'
-                    : 'opacity-30'
-                )}
-                style={{
-                  background: `${getColor(type)}18`,
-                  color: getColor(type),
-                  border: `1px solid ${getColor(type)}44`,
-                }}
+                key={c.cid}
+                onClick={() => toggleCommunity(c.cid)}
+                className={`w-full flex items-center gap-2 px-1 py-1 text-[12px] rounded hover:bg-[#2a2a4e] transition-opacity ${
+                  dimmed ? 'opacity-35' : ''
+                }`}
               >
                 <span
-                  className="w-2 h-2 rounded-full"
-                  style={{ background: getColor(type) }}
+                  className="w-3 h-3 rounded-full flex-shrink-0"
+                  style={{ backgroundColor: c.color }}
                 />
-                {type}
+                <span className="flex-1 text-left truncate">{c.label}</span>
+                <span className="text-[11px] text-[#666]">{c.count}</span>
               </button>
-            ))}
-          </div>
-        )}
+            );
+          })}
+        </div>
+
+        {/* Stats footer */}
+        <div className="px-3.5 py-2.5 border-t border-[#2a2a4e] text-[11px] text-[#555]">
+          {stats.n} nodes · {stats.e} edges · {stats.c} communities
+        </div>
       </div>
     </div>
   );

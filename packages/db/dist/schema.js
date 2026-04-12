@@ -168,4 +168,60 @@ export const annotations = pgTable('annotations', {
     index('annotations_entity_name_idx').on(table.entityName),
     index('annotations_project_id_idx').on(table.projectId),
 ]);
+// ─── graph_nodes ────────────────────────────────────────────────────────
+export const graphNodes = pgTable('graph_nodes', {
+    id: varchar('id', { length: 512 }).primaryKey(),
+    label: varchar('label', { length: 512 }).notNull(),
+    type: varchar('type', { length: 64 }).notNull().default('unknown'),
+    fileType: varchar('file_type', { length: 32 }),
+    sourceFile: text('source_file'),
+    sourceLocation: varchar('source_location', { length: 32 }),
+    projectId: uuid('project_id').references(() => projects.id, { onDelete: 'cascade' }),
+    repoId: uuid('repo_id').references(() => repos.id, { onDelete: 'cascade' }),
+    communityId: varchar('community_id', { length: 64 }),
+    properties: jsonb('properties'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+    index('graph_nodes_project_id_idx').on(table.projectId),
+    index('graph_nodes_repo_id_idx').on(table.repoId),
+    index('graph_nodes_type_idx').on(table.type),
+    index('graph_nodes_community_id_idx').on(table.communityId),
+    index('graph_nodes_source_file_idx').on(table.sourceFile),
+]);
+// ─── graph_edges ────────────────────────────────────────────────────────
+export const graphEdges = pgTable('graph_edges', {
+    id: uuid('id').primaryKey().default(sql `gen_random_uuid()`),
+    sourceNodeId: varchar('source_node_id', { length: 512 }).notNull()
+        .references(() => graphNodes.id, { onDelete: 'cascade' }),
+    targetNodeId: varchar('target_node_id', { length: 512 }).notNull()
+        .references(() => graphNodes.id, { onDelete: 'cascade' }),
+    relation: varchar('relation', { length: 128 }).notNull(),
+    confidence: varchar('confidence', { length: 32 }).default('EXTRACTED'),
+    confidenceScore: varchar('confidence_score', { length: 16 }),
+    weight: varchar('weight', { length: 16 }).default('1.0'),
+    sourceFile: text('source_file'),
+    properties: jsonb('properties'),
+    projectId: uuid('project_id').references(() => projects.id, { onDelete: 'cascade' }),
+}, (table) => [
+    index('graph_edges_source_idx').on(table.sourceNodeId),
+    index('graph_edges_target_idx').on(table.targetNodeId),
+    index('graph_edges_relation_idx').on(table.relation),
+    index('graph_edges_project_id_idx').on(table.projectId),
+]);
+// ─── graph_communities ──────────────────────────────────────────────────
+export const graphCommunities = pgTable('graph_communities', {
+    id: varchar('id', { length: 64 }).primaryKey(),
+    communityIndex: varchar('community_index', { length: 16 }).notNull(),
+    projectId: uuid('project_id').notNull()
+        .references(() => projects.id, { onDelete: 'cascade' }),
+    memberCount: varchar('member_count', { length: 16 }).notNull(),
+    cohesionScore: varchar('cohesion_score', { length: 16 }),
+    godNodes: jsonb('god_nodes'),
+    surprisingConnections: jsonb('surprising_connections'),
+    metadata: jsonb('metadata'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+    index('graph_communities_project_id_idx').on(table.projectId),
+]);
 //# sourceMappingURL=schema.js.map

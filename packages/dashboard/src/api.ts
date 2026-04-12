@@ -31,7 +31,14 @@ export const api = {
   listProjects: () => get<Project[]>('/api/projects'),
   getProject: (id: string) => get<Project>(`/api/projects/${id}`),
   getRepos: (projectId: string) => get<Repo[]>(`/api/repos?projectId=${projectId}`),
-  getScanStatus: (projectId?: string) => get<ScanJob[]>(projectId ? `/api/scan/status?projectId=${projectId}` : '/api/scan/status'),
+  getScanStatus: async (projectId?: string) => {
+    const res = await get<{ data: ScanJob[] } | ScanJob[]>(projectId ? `/api/scan/status?projectId=${projectId}` : '/api/scan/status');
+    return Array.isArray(res) ? res : res.data;
+  },
+  listSshKeys: () =>
+    get<{ name: string; path: string; type: 'private' | 'public' }[]>('/api/repos/ssh-keys'),
+  testRepoConnection: (cloneUrl: string, provider: string) =>
+    post<{ ok: boolean; branchCount?: number; branches?: string[]; defaultBranch?: string; error?: string }>('/api/repos/test-connection', { cloneUrl, provider }),
   getScanJob: (jobId: string) => get<ScanJob>(`/api/scan/${jobId}`),
   triggerScan: (data: { projectId: string; repoId: string; branch?: string; mode?: string }) => post<{ jobId: string }>('/api/scan', data),
   resumePausedScans: () => post<{ resumed: number; jobIds?: string[] }>('/api/scan/resume', {}),
@@ -47,8 +54,23 @@ export const api = {
   query: (query: string, mode?: string, projectId?: string, includeLinked?: boolean) =>
     post<{ response: string }>('/api/query', { query, mode, projectId: projectId || undefined, includeLinked }),
   getGraph: () => get<unknown>('/api/graph'),
+  getGraphSummary: (params: { projectId?: string; mode?: 'hubs' | 'communities'; limit?: number }) => {
+    const qs = new URLSearchParams();
+    if (params.projectId) qs.set('projectId', params.projectId);
+    if (params.mode) qs.set('mode', params.mode);
+    if (params.limit) qs.set('limit', String(params.limit));
+    return get<{ nodes: any[]; edges: any[]; mode: string; total: number }>(`/api/graph/summary?${qs}`);
+  },
+  getGraphCommunity: (params: { communityId: string; projectId?: string; limit?: number }) => {
+    const qs = new URLSearchParams();
+    qs.set('communityId', params.communityId);
+    if (params.projectId) qs.set('projectId', params.projectId);
+    if (params.limit) qs.set('limit', String(params.limit));
+    return get<{ nodes: any[]; edges: any[]; total: number; communityId: string }>(`/api/graph/community?${qs}`);
+  },
   createProject: (data: { name: string; description?: string; metadata?: Record<string, unknown> }) =>
     post<Project>('/api/projects', data),
+  deleteProject: (id: string) => del(`/api/projects/${id}`),
   createRepo: (data: { projectId: string; name: string; slug: string; cloneUrl: string; provider: string; techStack?: string[]; defaultBranch?: string }) =>
     post<Repo>('/api/repos', data),
   restartServices: (service?: string) =>
@@ -138,13 +160,11 @@ export const api = {
   getDocumentStatus: () => get<Record<string, number>>('/api/documents/status'),
   getDocuments: () => get<{ documents: unknown[]; statusCounts: Record<string, number>; total: number }>('/api/documents'),
 
-  // LightRAG settings
-  updateLightragConfig: (config: { maxParallelInsert?: number; maxAsync?: number; embeddingFuncMaxAsync?: number; embeddingBatchNum?: number }) =>
-    put<{ status: string; applied: Record<string, string> }>('/api/settings/lightrag', config),
+  // Document management (legacy endpoints, now backed by PostgreSQL graph)
   reprocessFailedDocuments: () => post<{ reprocessed: number }>('/api/documents/reprocess-failed', {}),
-  scanLightRAGDocuments: () => post<unknown>('/api/documents/scan', {}),
-  cancelLightRAGPipeline: () => post<unknown>('/api/documents/cancel', {}),
-  getLightRAGPipeline: () => get<{
+  scanDocuments: () => post<unknown>('/api/documents/scan', {}),
+  cancelPipeline: () => post<unknown>('/api/documents/cancel', {}),
+  getDocumentPipeline: () => get<{
     busy: boolean;
     job_name: string;
     docs: number;

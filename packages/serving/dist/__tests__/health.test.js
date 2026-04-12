@@ -15,7 +15,7 @@ describe('GET /api/health', () => {
         expect(typeof body.status).toBe('string');
         expect(['ok', 'degraded']).toContain(body.status);
         expect(body.services).toHaveProperty('postgres');
-        expect(body.services).toHaveProperty('lightrag');
+        expect(body.services).toHaveProperty('graphStorage');
         expect(body.services).toHaveProperty('ollama');
     });
     it('reports postgres as ok when DB is reachable', async () => {

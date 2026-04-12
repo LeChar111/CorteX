@@ -25,6 +25,6 @@ export declare const linkTool: {
         };
         required: string[];
     };
-    handler(args: Record<string, unknown>, client: CortexClient, _detected: DetectedProject | null): Promise<string>;
+    handler(args: Record<string, unknown>, client: CortexClient, detected: DetectedProject | null): Promise<string>;
 };
 //# sourceMappingURL=link.d.ts.map

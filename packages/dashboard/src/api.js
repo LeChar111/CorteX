@@ -28,7 +28,12 @@ export const api = {
     listProjects: () => get('/api/projects'),
     getProject: (id) => get(`/api/projects/${id}`),
     getRepos: (projectId) => get(`/api/repos?projectId=${projectId}`),
-    getScanStatus: (projectId) => get(projectId ? `/api/scan/status?projectId=${projectId}` : '/api/scan/status'),
+    getScanStatus: async (projectId) => {
+        const res = await get(projectId ? `/api/scan/status?projectId=${projectId}` : '/api/scan/status');
+        return Array.isArray(res) ? res : res.data;
+    },
+    listSshKeys: () => get('/api/repos/ssh-keys'),
+    testRepoConnection: (cloneUrl, provider) => post('/api/repos/test-connection', { cloneUrl, provider }),
     getScanJob: (jobId) => get(`/api/scan/${jobId}`),
     triggerScan: (data) => post('/api/scan', data),
     resumePausedScans: () => post('/api/scan/resume', {}),
@@ -46,6 +51,7 @@ export const api = {
     query: (query, mode, projectId, includeLinked) => post('/api/query', { query, mode, projectId: projectId || undefined, includeLinked }),
     getGraph: () => get('/api/graph'),
     createProject: (data) => post('/api/projects', data),
+    deleteProject: (id) => del(`/api/projects/${id}`),
     createRepo: (data) => post('/api/repos', data),
     restartServices: (service) => post('/api/services/restart', service ? { service } : {}),
     startServices: () => post('/api/services/start', {}),
@@ -102,10 +108,9 @@ export const api = {
     batchDeleteScans: (jobIds) => post('/api/scan/batch/delete', { jobIds }),
     getDocumentStatus: () => get('/api/documents/status'),
     getDocuments: () => get('/api/documents'),
-    // LightRAG settings
-    updateLightragConfig: (config) => put('/api/settings/lightrag', config),
+    // Document management (legacy endpoints, now backed by PostgreSQL graph)
     reprocessFailedDocuments: () => post('/api/documents/reprocess-failed', {}),
-    scanLightRAGDocuments: () => post('/api/documents/scan', {}),
-    cancelLightRAGPipeline: () => post('/api/documents/cancel', {}),
-    getLightRAGPipeline: () => get('/api/documents/pipeline'),
+    scanDocuments: () => post('/api/documents/scan', {}),
+    cancelPipeline: () => post('/api/documents/cancel', {}),
+    getDocumentPipeline: () => get('/api/documents/pipeline'),
 };

@@ -48,6 +48,7 @@ export class CortexClient {
     filePath?: string;
     language?: string;
     project?: string;
+    projectId?: string;
     type?: string;
     name?: string;
     description?: string;
@@ -58,6 +59,69 @@ export class CortexClient {
     const res = await this.request('/api/ingest', {
       method: 'POST',
       body: JSON.stringify(data),
+    });
+    return res.json();
+  }
+
+  // ── Direct graph operations ──
+
+  async createGraphEntity(data: {
+    name: string;
+    type?: string;
+    description?: string;
+    projectId?: string;
+    projectName?: string;
+    filePath?: string;
+  }): Promise<unknown> {
+    const res = await this.request('/api/graph/entity', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    });
+    return res.json();
+  }
+
+  async createGraphRelation(data: {
+    source: string;
+    target: string;
+    type: string;
+    description?: string;
+    weight?: number;
+    projectId?: string;
+  }): Promise<unknown> {
+    const res = await this.request('/api/graph/relation', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    });
+    return res.json();
+  }
+
+  async entityExists(name: string): Promise<boolean> {
+    try {
+      const res = await this.request(`/api/graph/entity/exists?name=${encodeURIComponent(name)}`);
+      const data = (await res.json()) as { exists?: boolean };
+      return data.exists === true;
+    } catch {
+      return false;
+    }
+  }
+
+  async searchGraphEntities(query: string, limit = 50): Promise<unknown> {
+    const res = await this.request(`/api/graph/search?q=${encodeURIComponent(query)}&limit=${limit}`);
+    return res.json();
+  }
+
+  async getCrossProjectGraph(projectId: string, entityName?: string, depth = 2): Promise<unknown> {
+    const params = new URLSearchParams({ projectId });
+    if (entityName) params.set('entity', entityName);
+    params.set('depth', String(depth));
+    const res = await this.request(`/api/graph/cross-project?${params}`);
+    return res.json();
+  }
+
+  async mergeEntities(duplicates: string[], canonical: string): Promise<unknown> {
+    const res = await this.request('/api/graph/merge', {
+      method: 'POST',
+      body: JSON.stringify({ duplicates, canonical }),
     });
     return res.json();
   }
@@ -114,6 +178,22 @@ export class CortexClient {
     return res.json();
   }
 
+  // Community analysis
+  async getCommunities(projectId: string): Promise<unknown> {
+    const res = await this.request(`/api/analysis/communities?projectId=${projectId}`);
+    return res.json();
+  }
+
+  async getGodNodes(projectId: string): Promise<unknown> {
+    const res = await this.request(`/api/analysis/god-nodes?projectId=${projectId}`);
+    return res.json();
+  }
+
+  async getSurprisingConnections(projectId: string): Promise<unknown> {
+    const res = await this.request(`/api/analysis/surprising-connections?projectId=${projectId}`);
+    return res.json();
+  }
+
   // Health
   async health(): Promise<unknown> {
     const res = await this.request('/api/health');
@@ -151,6 +231,23 @@ export class CortexClient {
   // Export
   async exportKb(): Promise<unknown> {
     const res = await this.request('/api/export');
+    return res.json();
+  }
+
+  // Cross-project link detection
+  async detectCrossProjectLinks(sourceProjectId: string, targetProjectId: string): Promise<unknown> {
+    const res = await this.request('/api/analysis/detect-links', {
+      method: 'POST',
+      body: JSON.stringify({ sourceProjectId, targetProjectId }),
+    });
+    return res.json();
+  }
+
+  async autoLinkProjects(sourceProjectId: string, targetProjectId: string, linkType: string = 'related'): Promise<unknown> {
+    const res = await this.request('/api/analysis/auto-link', {
+      method: 'POST',
+      body: JSON.stringify({ sourceProjectId, targetProjectId, linkType }),
+    });
     return res.json();
   }
 }

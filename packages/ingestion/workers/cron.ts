@@ -1,5 +1,5 @@
 import { Queue } from 'bullmq';
-import IORedis from 'ioredis';
+import { Redis as IORedis } from 'ioredis';
 import { getDb, listProjects, listReposByProject } from '@cortex/db';
 
 export async function setupScheduledScans(): Promise<void> {

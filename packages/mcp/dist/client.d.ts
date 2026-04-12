@@ -6,13 +6,20 @@ export declare class CortexClient {
     query(query: string, options?: {
         project?: string;
         mode?: string;
+        limit?: number;
+        projectId?: string;
+        includeLinked?: boolean;
     }): Promise<unknown>;
-    getGraph(): Promise<unknown>;
+    getGraph(options?: {
+        entityName?: string;
+        depth?: number;
+    }): Promise<unknown>;
     ingest(data: {
         content: string;
         filePath?: string;
         language?: string;
         project?: string;
+        projectId?: string;
         type?: string;
         name?: string;
         description?: string;
@@ -20,6 +27,26 @@ export declare class CortexClient {
         target?: string;
         relationType?: string;
     }): Promise<unknown>;
+    createGraphEntity(data: {
+        name: string;
+        type?: string;
+        description?: string;
+        projectId?: string;
+        projectName?: string;
+        filePath?: string;
+    }): Promise<unknown>;
+    createGraphRelation(data: {
+        source: string;
+        target: string;
+        type: string;
+        description?: string;
+        weight?: number;
+        projectId?: string;
+    }): Promise<unknown>;
+    entityExists(name: string): Promise<boolean>;
+    searchGraphEntities(query: string, limit?: number): Promise<unknown>;
+    getCrossProjectGraph(projectId: string, entityName?: string, depth?: number): Promise<unknown>;
+    mergeEntities(duplicates: string[], canonical: string): Promise<unknown>;
     listProjects(): Promise<unknown[]>;
     getRepos(projectId: string): Promise<unknown[]>;
     triggerScan(data: {
@@ -34,6 +61,10 @@ export declare class CortexClient {
         type?: string;
         limit?: number;
     }): Promise<unknown[]>;
+    getContext(projectIdOrName: string, focus?: string): Promise<unknown>;
+    getCommunities(projectId: string): Promise<unknown>;
+    getGodNodes(projectId: string): Promise<unknown>;
+    getSurprisingConnections(projectId: string): Promise<unknown>;
     health(): Promise<unknown>;
     impactAnalysis(data: {
         filePath: string;
@@ -47,5 +78,7 @@ export declare class CortexClient {
         projectId?: string;
     }): Promise<unknown>;
     exportKb(): Promise<unknown>;
+    detectCrossProjectLinks(sourceProjectId: string, targetProjectId: string): Promise<unknown>;
+    autoLinkProjects(sourceProjectId: string, targetProjectId: string, linkType?: string): Promise<unknown>;
 }
 //# sourceMappingURL=client.d.ts.map

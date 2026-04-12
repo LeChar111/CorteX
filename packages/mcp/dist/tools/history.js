@@ -27,7 +27,19 @@ export const historyTool = {
             projectId = detected.projectId;
         }
         const result = await client.getEvents({ projectId, limit });
-        return JSON.stringify(result, null, 2);
+        if (!result || result.length === 0) {
+            return 'No history events found.';
+        }
+        const lines = [`# History (${result.length} events)`, ''];
+        for (const event of result) {
+            const date = event.createdAt ? new Date(event.createdAt).toLocaleString() : '?';
+            const type = event.type ?? 'unknown';
+            const detail = event.payload
+                ? Object.entries(event.payload).map(([k, v]) => `${k}=${typeof v === 'string' ? v : JSON.stringify(v)}`).join(', ')
+                : '';
+            lines.push(`- **${type}** ${date}${detail ? ' — ' + detail : ''}`);
+        }
+        return lines.join('\n');
     },
 };
 //# sourceMappingURL=history.js.map

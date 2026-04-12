@@ -1,14 +1,13 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
 import { Queue } from 'bullmq';
-import Redis from 'ioredis';
 import { getDb, listScanJobs, getScanJob, createScanJob, updateScanJob, deleteScanJob, getRepoById } from '@cortex/db';
+import { getRedis } from '../../redis.js';
+import { invalidateProjectCache, invalidateGraphCache } from '../middleware/cache.js';
 let scanQueue = null;
 function getQueue() {
     if (!scanQueue) {
-        const redisUrl = process.env['REDIS_URL'] ?? 'redis://localhost:6379';
-        const connection = new Redis.default(redisUrl, { maxRetriesPerRequest: null });
-        scanQueue = new Queue('cortex-scan', { connection });
+        scanQueue = new Queue('cortex-scan', { connection: getRedis() });
     }
     return scanQueue;
 }
@@ -55,10 +54,19 @@ scanRouter.post('/scan', async (c) => {
 });
 // GET /scan/status — list recent scan jobs (optionally filtered by projectId)
 scanRouter.get('/scan/status', async (c) => {
-    const projectId = c.req.query('projectId');
     const db = getDb();
+    const projectId = c.req.query('projectId') ?? undefined;
+    const limit = Number(c.req.query('limit')) || 50;
+    const offset = Number(c.req.query('offset')) || 0;
     const jobs = await listScanJobs(db, projectId);
-    return c.json(jobs);
+    const total = jobs.length;
+    const paginated = jobs.slice(offset, offset + limit);
+    return c.json({
+        data: paginated,
+        total,
+        limit,
+        offset,
+    });
 });
 // POST /scan/resume — resume all paused scans
 scanRouter.post('/scan/resume', async (c) => {
@@ -244,5 +252,13 @@ scanRouter.get('/scan/:jobId', async (c) => {
         return c.json({ error: 'Scan job not found' }, 404);
     }
     return c.json(job);
+});
+// POST /scan/invalidate-cache — called after scan completion to clear stale cache
+scanRouter.post('/scan/invalidate-cache', async (c) => {
+    const body = await c.req.json().catch(() => ({}));
+    const projectId = body.projectId;
+    await invalidateGraphCache();
+    const deleted = await invalidateProjectCache(projectId);
+    return c.json({ invalidated: deleted });
 });
 //# sourceMappingURL=scan.js.map

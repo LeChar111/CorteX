@@ -28,6 +28,36 @@ reposRouter.get('/repos', async (c) => {
     const repos = await listReposByProject(db, projectId);
     return c.json(repos);
 });
+// GET /repos/ssh-keys — list SSH keys found in ~/.ssh
+reposRouter.get('/repos/ssh-keys', async (c) => {
+    const { readdir, stat } = await import('node:fs/promises');
+    const { homedir } = await import('node:os');
+    const { join } = await import('node:path');
+    const sshDir = join(homedir(), '.ssh');
+    try {
+        const files = await readdir(sshDir);
+        const keys = [];
+        for (const f of files) {
+            if (['config', 'known_hosts', 'known_hosts.old', 'known_hosts_old', 'authorized_keys', 'environment'].includes(f))
+                continue;
+            const fullPath = join(sshDir, f);
+            const s = await stat(fullPath);
+            if (!s.isFile() || s.size > 100_000)
+                continue;
+            if (f.endsWith('.pub')) {
+                keys.push({ name: f, path: `~/.ssh/${f}`, type: 'public' });
+            }
+            else if (!f.includes('.')) {
+                keys.push({ name: f, path: `~/.ssh/${f}`, type: 'private' });
+            }
+        }
+        keys.sort((a, b) => (a.type === b.type ? a.name.localeCompare(b.name) : a.type === 'private' ? -1 : 1));
+        return c.json(keys);
+    }
+    catch {
+        return c.json([]);
+    }
+});
 // GET /repos/:id
 reposRouter.get('/repos/:id', async (c) => {
     const db = getDb();
@@ -94,6 +124,25 @@ reposRouter.delete('/repos/:id', async (c) => {
     const db = getDb();
     await deleteRepo(db, c.req.param('id'));
     return new Response(null, { status: 204 });
+});
+// POST /repos/test-connection — test connectivity to a repo URL (no DB required)
+reposRouter.post('/repos/test-connection', async (c) => {
+    const body = await c.req.json();
+    const schema = z.object({
+        cloneUrl: z.string().min(1),
+        provider: z.enum(['github', 'gitlab', 'bitbucket', 'local']),
+    });
+    const parsed = schema.safeParse(body);
+    if (!parsed.success) {
+        return c.json({ error: 'Validation error', details: parsed.error.errors }, 400);
+    }
+    try {
+        const branches = await fetchRemoteBranches(parsed.data.cloneUrl, parsed.data.provider);
+        return c.json({ ok: true, branchCount: branches.length, branches, defaultBranch: branches.includes('main') ? 'main' : branches.includes('master') ? 'master' : branches[0] ?? null });
+    }
+    catch (err) {
+        return c.json({ ok: false, error: err instanceof Error ? err.message : 'Connection failed' }, 200);
+    }
 });
 // GET /repos/:id/branches — list remote branches for a repo
 reposRouter.get('/repos/:id/branches', async (c) => {

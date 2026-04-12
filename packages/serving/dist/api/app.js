@@ -1,5 +1,6 @@
 import { Hono } from 'hono';
-import { logger } from 'hono/logger';
+import { cors } from 'hono/cors';
+import { structuredLogger } from '../logger.js';
 import { createNodeWebSocket } from '@hono/node-ws';
 import { serveStatic } from '@hono/node-server/serve-static';
 import { readFileSync } from 'node:fs';
@@ -25,14 +26,31 @@ import { changelogRoutes } from './routes/changelog.js';
 import { documentsRouter } from './routes/documents.js';
 import { chatRouter } from './routes/chat.js';
 import { contextRoutes } from './routes/context.js';
+import { graphOpsRoutes } from './routes/graph-ops.js';
+import { crossProjectDetectRoutes } from './routes/cross-project-detect.js';
 import { webhookRoutes } from './routes/webhooks.js';
 export function createApp({ apiKeys, hub }) {
     const app = new Hono();
-    app.use('*', logger());
+    // CORS for dev (Vite dashboard at :5173 calls API at :3100)
+    app.use('*', cors({
+        origin: (origin) => {
+            // Allow localhost on any port (dev) + same-origin (prod)
+            if (!origin)
+                return origin;
+            if (/^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin))
+                return origin;
+            return undefined;
+        },
+        allowHeaders: ['X-API-Key', 'Content-Type'],
+        allowMethods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+        credentials: true,
+    }));
+    app.use('*', structuredLogger());
     app.onError(errorHandler);
     // Set up WebSocket support
     const { injectWebSocket, upgradeWebSocket } = createNodeWebSocket({ app });
     // WebSocket upgrade route at /ws — auth via ?key= query param
+    const wsMessageCounts = new Map();
     app.get('/ws', upgradeWebSocket((c) => {
         const key = c.req.query('key') ?? '';
         if (!apiKeys.includes(key)) {
@@ -49,6 +67,16 @@ export function createApp({ apiKeys, hub }) {
                 hub?.addClient(clientId, ws, userId);
             },
             onMessage(evt, _ws) {
+                // Rate limit: max 30 messages per 60s per client
+                const now = Date.now();
+                let entry = wsMessageCounts.get(clientId);
+                if (!entry || now >= entry.resetAt) {
+                    entry = { count: 0, resetAt: now + 60_000 };
+                    wsMessageCounts.set(clientId, entry);
+                }
+                entry.count++;
+                if (entry.count > 30)
+                    return; // silently drop excess messages
                 try {
                     const msg = JSON.parse(String(evt.data));
                     if (msg.type === 'subscribe' && typeof msg.projectId === 'string') {
@@ -65,6 +93,7 @@ export function createApp({ apiKeys, hub }) {
             },
             onClose(_evt, _ws) {
                 hub?.removeClient(clientId);
+                wsMessageCounts.delete(clientId);
             },
         };
     }));
@@ -92,6 +121,8 @@ export function createApp({ apiKeys, hub }) {
     api.route('/', documentsRouter);
     api.route('/', chatRouter);
     api.route('/', contextRoutes);
+    api.route('/', graphOpsRoutes);
+    api.route('/', crossProjectDetectRoutes);
     app.route('/api', api);
     // Serve dashboard static files — must come AFTER all /api/* and /ws routes
     // Resolve the dashboard dist directory relative to this file's location at compile time

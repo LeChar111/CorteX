@@ -1,7 +1,6 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
-import { getDb, createArchRule, listArchRules, deleteArchRule } from '@cortex/db';
-import { LightRAGClient } from '../../lightrag/client.js';
+import { getDb, createArchRule, listArchRules, deleteArchRule, getGraphFull } from '@cortex/db';
 
 export const archRulesRouter = new Hono();
 
@@ -45,9 +44,7 @@ archRulesRouter.post('/arch-rules/check', async (c) => {
   const rules = await listArchRules(db, projectId);
   if (rules.length === 0) return c.json({ violations: [], passed: 0, failed: 0, message: 'No rules defined' });
 
-  const lightragUrl = process.env['LIGHTRAG_URL'] ?? 'http://localhost:9621';
-  const client = new LightRAGClient(lightragUrl);
-  const graph = await client.getGraphFull().catch(() => ({ nodes: [], edges: [] }));
+  const graph = await getGraphFull(db).catch(() => ({ nodes: [], edges: [] }));
   const edges = graph.edges as Array<Record<string, unknown>>;
 
   const violations: Array<{ rule: string; severity: string; source: string; target: string; relation: string }> = [];
@@ -59,8 +56,8 @@ archRulesRouter.post('/arch-rules/check', async (c) => {
     const targetPattern = new RegExp(r.target, 'i');
 
     const matchingEdges = edges.filter((e) => {
-      const src = String(e.source ?? '');
-      const tgt = String(e.target ?? '');
+      const src = String(e.sourceNodeId ?? e.source_node_id ?? '');
+      const tgt = String(e.targetNodeId ?? e.target_node_id ?? '');
       return sourcePattern.test(src) && targetPattern.test(tgt);
     });
 
@@ -69,9 +66,9 @@ archRulesRouter.post('/arch-rules/check', async (c) => {
         violations.push({
           rule: archRule.name,
           severity: archRule.severity,
-          source: String(edge.source ?? ''),
-          target: String(edge.target ?? ''),
-          relation: String(edge.description ?? edge.keywords ?? ''),
+          source: String(edge.sourceNodeId ?? edge.source_node_id ?? ''),
+          target: String(edge.targetNodeId ?? edge.target_node_id ?? ''),
+          relation: String(edge.relation ?? ''),
         });
       }
     } else {

@@ -36,17 +36,34 @@ import { CardWidget } from '../components/ui/CardWidget.tsx';
 import { TaskChecklist } from '../components/ui/TaskChecklist.tsx';
 import { CollapsibleSection } from '../components/ui/CollapsibleSection.tsx';
 
-// Activity data for bar chart (like Crextio's daily progress)
-function generateActivityData() {
-  const days = ['S', 'M', 'T', 'W', 'T', 'F', 'S'];
-  return days.map((day, i) => ({
-    day,
-    scans: Math.floor(Math.random() * 12) + 2,
-    isToday: i === 3,
-  }));
-}
+/** Build last-7-days scan activity from real scan data */
+function buildActivityData(scanList: { createdAt: string }[]) {
+  const dayLabels = ['S', 'M', 'T', 'W', 'T', 'F', 'S'];
+  const now = new Date();
+  void now.getDay(); // 0=Sun — used for future activity chart
 
-const ACTIVITY_DATA = generateActivityData();
+  // Build array for last 7 days (oldest first)
+  const days: { day: string; date: string; scans: number; isToday: boolean }[] = [];
+  for (let offset = 6; offset >= 0; offset--) {
+    const d = new Date(now);
+    d.setDate(d.getDate() - offset);
+    days.push({
+      day: dayLabels[d.getDay()]!,
+      date: d.toISOString().slice(0, 10), // YYYY-MM-DD
+      scans: 0,
+      isToday: offset === 0,
+    });
+  }
+
+  // Count scans per day
+  for (const scan of scanList) {
+    const scanDate = scan.createdAt.slice(0, 10);
+    const entry = days.find((d) => d.date === scanDate);
+    if (entry) entry.scans++;
+  }
+
+  return days;
+}
 
 export function Overview() {
   const navigate = useNavigate();
@@ -66,6 +83,9 @@ export function Overview() {
   const scanList = scans ?? [];
   const projectList = projects ?? [];
   const eventList = events ?? [];
+
+  const activityData = buildActivityData(scanList);
+  const weekScanCount = activityData.reduce((sum, d) => sum + d.scans, 0);
 
   const completedScans = scanList.filter((s) => s.status === 'completed').length;
   const runningScans = scanList.filter((s) => s.status === 'running').length;
@@ -167,11 +187,11 @@ export function Overview() {
         {/* Card 2: Progress / Scan Activity bar chart (like Crextio progress) */}
         <CardWidget title="Scan Activity">
           <div className="flex items-baseline gap-2 mt-2 ">
-            <span className="text-2xl font-bold text-text">{scanList.length}</span>
+            <span className="text-2xl font-bold text-text">{weekScanCount}</span>
             <span className="text-xs text-muted">Scans this week</span>
           </div>
           <ResponsiveContainer width="100%" height={180}>
-            <BarChart data={ACTIVITY_DATA} barSize={24} barGap={4}>
+            <BarChart data={activityData} barSize={24} barGap={4}>
               <XAxis
                 dataKey="day"
                 tick={{ fontSize: 10, fill: '#A0A0B0' }}
@@ -192,7 +212,7 @@ export function Overview() {
                 cursor={{ fill: 'rgba(237,190,68,0.06)' }}
               />
               <Bar dataKey="scans" radius={[6, 6, 0, 0]}>
-                {ACTIVITY_DATA.map((entry, i) => (
+                {activityData.map((entry, i) => (
                   <Cell
                     key={i}
                     fill={entry.isToday ? '#EDBE44' : '#EDE7DC'}

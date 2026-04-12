@@ -1,33 +1,46 @@
-import { LightRAGClient } from '../lightrag/client.js';
-import { getDb, getProjectById } from '@cortex/db';
-const lightragUrl = () => process.env['LIGHTRAG_URL'] ?? 'http://localhost:9621';
-export async function buildContext(message, projectId, mode = 'mix') {
-    const client = new LightRAGClient(lightragUrl());
-    let enrichedQuery = message;
+import { getDb, getProjectById, searchGraphNodes, getGraphAroundEntity } from '@cortex/db';
+export async function buildContext(message, projectId, _mode = 'mix') {
     let projectName;
     if (projectId) {
         const db = getDb();
         const project = await getProjectById(db, projectId);
         if (project) {
             projectName = project.name;
-            enrichedQuery = `[Project: ${project.name}] ${message}`;
         }
     }
     try {
-        const response = await client.query(enrichedQuery, mode, 15_000);
+        const db = getDb();
+        // Search graph nodes matching the message
+        const nodes = await searchGraphNodes(db, message, projectId, 10);
+        if (nodes.length === 0) {
+            return { context: '', sources: [], projectName };
+        }
+        // Get graph context around the top matches
+        const topMatches = nodes.slice(0, 3);
+        const contextParts = [];
+        const sources = [];
+        for (const node of topMatches) {
+            const graph = await getGraphAroundEntity(db, node.label, 1);
+            const relations = graph.edges.map((e) => {
+                const src = graph.nodes.find((n) => n.id === e.sourceNodeId);
+                const tgt = graph.nodes.find((n) => n.id === e.targetNodeId);
+                return `  ${src?.label ?? e.sourceNodeId} --[${e.relation}]--> ${tgt?.label ?? e.targetNodeId}`;
+            });
+            contextParts.push(`**${node.label}** (${node.type})${node.sourceFile ? ` in \`${node.sourceFile}\`` : ''}` +
+                (relations.length > 0 ? `\n${relations.join('\n')}` : ''));
+            if (node.sourceFile) {
+                sources.push(node.sourceFile);
+            }
+        }
         return {
-            context: response,
-            sources: extractSources(response),
+            context: contextParts.join('\n\n'),
+            sources: [...new Set(sources)].slice(0, 10),
             projectName,
         };
     }
     catch {
-        // LightRAG down or timeout — return empty context
+        // Graph query failed -- return empty context
         return { context: '', sources: [], projectName };
     }
-}
-function extractSources(text) {
-    const matches = text.match(/`[^`]+`/g) ?? [];
-    return [...new Set(matches.map((m) => m.replace(/`/g, '')))].slice(0, 10);
 }
 //# sourceMappingURL=context.js.map

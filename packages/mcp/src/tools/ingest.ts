@@ -23,7 +23,7 @@ export const ingestTool = {
     const filePath = args.filePath as string;
     const language = args.language as string | undefined;
     const project = (args.project as string) || detected?.projectName;
-    await client.ingest({ content, filePath, language, project, type: 'code' });
+    await client.ingest({ content, filePath, language, project, projectId: detected?.projectId, type: 'code' });
     return `Ingested ${filePath} (${language ?? 'auto'}) into project "${project ?? 'unknown'}".`;
   },
 };

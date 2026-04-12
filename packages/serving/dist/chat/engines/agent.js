@@ -1,5 +1,5 @@
 import Anthropic from '@anthropic-ai/sdk';
-import { LightRAGClient } from '../../lightrag/client.js';
+import { getDb, searchGraphNodes, getGraphAroundEntity } from '@cortex/db';
 const MODEL = 'claude-haiku-4-5-20251001';
 const MAX_TOOL_ROUNDS = 3;
 let client = null;
@@ -9,48 +9,59 @@ function getClient() {
     }
     return client;
 }
-const lightragUrl = () => process.env['LIGHTRAG_URL'] ?? 'http://localhost:9621';
 const tools = [
     {
         name: 'query_knowledge',
-        description: 'Search the knowledge base with a natural language query. Use modes: "mix" for balanced, "naive" for fast fulltext, "local" for semantic, "global" for graph traversal.',
+        description: 'Search the knowledge graph with a natural language query. Returns matching entities and their relationships.',
         input_schema: {
             type: 'object',
             properties: {
                 query: { type: 'string', description: 'The search query' },
-                mode: { type: 'string', enum: ['mix', 'naive', 'local', 'global'], description: 'Search mode' },
+                limit: { type: 'number', description: 'Max results (default 20)' },
             },
             required: ['query'],
         },
     },
     {
         name: 'search_entities',
-        description: 'Get the knowledge graph structure to find entities and their relationships.',
+        description: 'Get the knowledge graph structure around an entity to find its relationships.',
         input_schema: {
             type: 'object',
             properties: {
-                label: { type: 'string', description: 'Entity label filter, or * for all' },
+                label: { type: 'string', description: 'Entity label to explore' },
+                depth: { type: 'number', description: 'Graph traversal depth (default 1)' },
             },
-            required: [],
+            required: ['label'],
         },
     },
 ];
 async function executeTool(name, input) {
-    const rag = new LightRAGClient(lightragUrl());
+    const db = getDb();
     switch (name) {
         case 'query_knowledge': {
-            const mode = input.mode ?? 'mix';
             try {
-                return await rag.query(input.query, mode, 10_000);
+                const limit = input.limit ?? 20;
+                const nodes = await searchGraphNodes(db, input.query, undefined, limit);
+                if (nodes.length === 0)
+                    return 'No matching entities found.';
+                const summaries = nodes.map((n) => {
+                    const props = (n.properties ?? {});
+                    return `- **${n.label}** (${n.type})${n.sourceFile ? ` in \`${n.sourceFile}\`` : ''}: ${String(props.description ?? '')}`;
+                });
+                return `Found ${nodes.length} entities:\n${summaries.join('\n')}`;
             }
             catch {
-                return 'Knowledge base query timed out or failed.';
+                return 'Knowledge graph query failed.';
             }
         }
         case 'search_entities': {
             try {
-                const graph = await rag.getGraphs(input.label ?? '*');
-                return JSON.stringify(graph).slice(0, 4000);
+                const depth = input.depth ?? 1;
+                const graph = await getGraphAroundEntity(db, input.label, depth);
+                return JSON.stringify({
+                    nodes: graph.nodes.map((n) => ({ id: n.id, label: n.label, type: n.type })),
+                    edges: graph.edges.map((e) => ({ source: e.sourceNodeId, target: e.targetNodeId, relation: e.relation })),
+                }).slice(0, 4000);
             }
             catch {
                 return 'Graph query failed.';
@@ -118,7 +129,7 @@ function buildSystemPrompt(context, projectName) {
         prompt += ` You are investigating the project "${projectName}".`;
     }
     if (context) {
-        prompt += `\n\nInitial context from knowledge base:\n${context}`;
+        prompt += `\n\nInitial context from knowledge graph:\n${context}`;
     }
     return prompt;
 }

@@ -65,7 +65,11 @@ function formatJson(data: unknown): string {
   }
 }
 
-export function TerminalPage() {
+interface TerminalPageProps {
+  hideHeader?: boolean;
+}
+
+export function TerminalPage({ hideHeader = false }: TerminalPageProps) {
   const [lines, setLines] = useState<TerminalLine[]>([
     mkLine('info', 'Cortex Terminal — type "help" to get started'),
     mkLine('separator', ''),
@@ -215,20 +219,21 @@ export function TerminalPage() {
 
   return (
     <div className="space-y-6">
-      {/* Header */}
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-6xl font-bold text-text">Terminal</h1>
-          <p className="mt-0.5 text-xl text-muted">Run Cortex CLI commands interactively</p>
+      {!hideHeader && (
+        <div className="flex items-center justify-between">
+          <div>
+            <h1 className="text-6xl font-bold text-text">Terminal</h1>
+            <p className="mt-0.5 text-xl text-muted">Run Cortex CLI commands interactively</p>
+          </div>
+          <button
+            onClick={() => setLines([mkLine('info', 'Terminal cleared'), mkLine('separator', '')])}
+            className="flex items-center gap-2 rounded-full border-2 border-border-light bg-card px-3 py-2 text-sm font-medium text-text hover:bg-hover transition-colors"
+          >
+            <Trash2 className="h-4 w-4 text-muted" />
+            Clear
+          </button>
         </div>
-        <button
-          onClick={() => setLines([mkLine('info', 'Terminal cleared'), mkLine('separator', '')])}
-          className="flex items-center gap-2 rounded-full border-2 border-border-light bg-card px-3 py-2 text-sm font-medium text-text hover:bg-hover transition-colors"
-        >
-          <Trash2 className="h-4 w-4 text-muted" />
-          Clear
-        </button>
-      </div>
+      )}
 
       <div className="flex gap-5 items-start">
         {/* Terminal card */}

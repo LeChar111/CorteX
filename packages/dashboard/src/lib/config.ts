@@ -27,7 +27,6 @@ export const SERVICES: ServiceDef[] = [
   { key: 'postgres', name: 'PostgreSQL', image: 'pgvector/pgvector:pg16', port: ':5432', desc: 'pgvector/pgvector:pg16' },
   { key: 'redis',    name: 'Redis',      image: 'redis:7-alpine',         port: ':6379', desc: 'redis:7-alpine' },
   { key: 'ollama',   name: 'Ollama',     image: 'ollama/ollama',          port: ':11434', desc: 'Local LLM / Embeddings' },
-  { key: 'lightrag', name: 'LightRAG',   image: 'custom',                 port: ':9621', desc: 'Graph RAG Engine' },
 ];
 
 /** All Docker services including the API itself. */
@@ -35,7 +34,6 @@ export const DOCKER_SERVICES: ServiceDef[] = [
   { key: 'postgres', name: 'PostgreSQL', image: 'pgvector/pgvector:pg16', port: ':5432', desc: 'pgvector/pgvector:pg16' },
   { key: 'redis',    name: 'Redis',      image: 'redis:7-alpine',         port: ':6379', desc: 'redis:7-alpine' },
   { key: 'ollama',   name: 'Ollama',     image: 'ollama/ollama',          port: ':11434', desc: 'Local LLM / Embeddings' },
-  { key: 'lightrag', name: 'LightRAG',   image: 'custom',                 port: ':9621', desc: 'Graph RAG Engine' },
   { key: 'api',      name: 'Cortex API', image: 'node',                   port: ':3100', desc: 'Cortex API Server' },
 ];
 
@@ -48,13 +46,15 @@ export interface EnvVarDef {
   sample: string;
 }
 
-/** Environment variables required for local development. */
+/** Environment variables required for local development (voir .env.example). */
 export const ENV_VARS: EnvVarDef[] = [
-  { key: 'DATABASE_URL',        sample: 'postgresql://cortex:***@localhost:5432/cortex' },
-  { key: 'REDIS_URL',           sample: 'redis://localhost:6379' },
-  { key: 'LIGHTRAG_URL',        sample: 'http://localhost:9621' },
-  { key: 'CORTEX_LLM_MODEL',   sample: 'llama3.2:3b' },
-  { key: 'PORT',                sample: '3100' },
+  { key: 'DATABASE_URL',           sample: 'postgresql://cortex:***@localhost:5432/cortex' },
+  { key: 'REDIS_URL',              sample: 'redis://localhost:6379' },
+  { key: 'OLLAMA_LLM_MODEL',       sample: 'qwen2.5:7b' },
+  { key: 'OLLAMA_EMBEDDING_MODEL', sample: 'nomic-embed-text' },
+  { key: 'ANTHROPIC_API_KEY',      sample: 'sk-ant-xxx' },
+  { key: 'API_KEYS',               sample: 'dev-key-1,dev-key-2,...' },
+  { key: 'PORT',                   sample: '3100' },
 ];
 
 // ---------------------------------------------------------------------------
@@ -66,15 +66,18 @@ export interface SetupCommandDef {
   command: string;
 }
 
-/** Quick-setup commands for bootstrapping the Cortex stack. */
+/** Quick-setup commands for bootstrapping the Cortex stack (flux Make du README). */
 export const SETUP_COMMANDS: SetupCommandDef[] = [
-  { label: 'Start infrastructure', command: 'docker compose up -d' },
-  { label: 'Pull Ollama models',   command: './scripts/init-ollama.sh' },
-  { label: 'Run migrations',       command: 'pnpm --filter @cortex/db run migrate' },
-  { label: 'Seed demo data',       command: 'pnpm seed' },
-  { label: 'Start API',            command: 'pnpm --filter @cortex/serving run dev' },
-  {
-    label: 'Register MCP',
-    command: 'claude mcp add cortex --transport stdio --scope user -- pnpm --filter @cortex/mcp run start',
-  },
+  { label: 'Install complet (deps + Docker + migrations + modèles + MCP + skills)', command: 'make install' },
+  { label: 'Lancer le stack dev (foreground, UI colorée)',                           command: 'make dev' },
+  { label: 'Mode silencieux (détaché, terminal libre)',                              command: 'make cortex-bg' },
+  { label: 'État compact (PIDs + Docker + health API)',                              command: 'make cortex-status' },
+  { label: 'Arrêter les serveurs lancés par cortex-bg',                              command: 'make cortex-stop' },
+  { label: 'Docker uniquement (PostgreSQL, Redis, Ollama)',                          command: 'make infra' },
+  { label: 'Setup interactif alternatif (détecte la plateforme)',                    command: './setup.sh' },
+  { label: 'Réenregistrer le MCP Claude Code (scope user)',                          command: 'make install-cli' },
+  { label: 'Claude Code — finaliser + vérifier',                                     command: '/cortex-install' },
+  { label: 'Claude Code — enregistrer le repo courant + scan',                       command: '/cortex .' },
+  { label: 'Claude Code — snapshot horodaté sur branche backup',                     command: '/cortex-backup' },
+  { label: 'Claude Code — restaurer depuis un snapshot',                             command: '/cortex-sync list' },
 ];

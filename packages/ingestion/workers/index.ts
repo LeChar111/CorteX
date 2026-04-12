@@ -8,10 +8,9 @@ import { createDiffWorker } from './diff-worker.js';
 import { setupScheduledScans } from './cron.js';
 
 const redisUrl = process.env['REDIS_URL'] ?? 'redis://localhost:6379';
-const lightragUrl = process.env['LIGHTRAG_URL'] ?? 'http://localhost:9621';
 
-const scanWorker = createScanWorker(redisUrl, lightragUrl);
-const diffWorker = createDiffWorker(redisUrl, lightragUrl);
+const scanWorker = createScanWorker(redisUrl);
+const diffWorker = createDiffWorker(redisUrl);
 
 console.log('Workers ready. Waiting for jobs...');
 

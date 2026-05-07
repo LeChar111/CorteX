@@ -15,9 +15,10 @@
   "devDependencies": {
     "tsx": "^4.21.0"
   },
+  "packageManager": "pnpm@10.33.0",
   "engines": {
     "node": ">=22.0.0",
-    "pnpm": ">=9.0.0"
+    "pnpm": ">=10.0.0"
   },
   "pnpm": {
     "onlyBuiltDependencies": [

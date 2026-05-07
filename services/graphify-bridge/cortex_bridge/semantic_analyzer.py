@@ -5,8 +5,10 @@ semantic relationships that AST extraction can't find.
 """
 
 import json
+import os
 import subprocess
 import sys
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any
 
@@ -17,6 +19,13 @@ import networkx as nx
 BATCH_SIZE = 50
 # Max edges to include per batch
 MAX_EDGES_PER_BATCH = 100
+# Parallel Claude CLI calls (override via CORTEX_SEMANTIC_PARALLELISM)
+DEFAULT_PARALLELISM = 8
+# Min community size to bother analyzing (override via CORTEX_SEMANTIC_MIN_SIZE)
+DEFAULT_MIN_COMMUNITY_SIZE = 4
+# Max number of communities to analyze (largest first), 0 = unlimited
+# (override via CORTEX_SEMANTIC_MAX_COMMUNITIES)
+DEFAULT_MAX_COMMUNITIES = 50
 
 
 def run_claude_cli(prompt: str, model: str = "claude-haiku-4-5-20251001") -> str | None:
@@ -118,6 +127,16 @@ If everything looks coherent and you have no suggestions, return:
         return {"incoherent_edges": [], "new_edges": [], "notes": "Parse error"}
 
 
+def _env_int(name: str, default: int) -> int:
+    raw = os.environ.get(name)
+    if not raw:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        return default
+
+
 def run_semantic_analysis(
     graph_path: str,
     communities: dict[str, dict],
@@ -140,6 +159,12 @@ def run_semantic_analysis(
     if not enabled:
         return {"edges_removed": 0, "edges_added": 0, "communities_analyzed": 0, "notes": {}}
 
+    # Honor "fast" preset: tightens defaults if set
+    fast = os.environ.get("CORTEX_SEMANTIC_FAST", "").lower() == "true"
+    parallelism = _env_int("CORTEX_SEMANTIC_PARALLELISM", DEFAULT_PARALLELISM if not fast else 12)
+    min_size = _env_int("CORTEX_SEMANTIC_MIN_SIZE", DEFAULT_MIN_COMMUNITY_SIZE if not fast else 6)
+    max_communities = _env_int("CORTEX_SEMANTIC_MAX_COMMUNITIES", DEFAULT_MAX_COMMUNITIES if not fast else 30)
+
     # Check if Claude CLI is available
     test = run_claude_cli("Reply with just: OK")
     if test is None:
@@ -157,57 +182,87 @@ def run_semantic_analysis(
     edges_to_remove: set[int] = set()
     new_links: list[dict] = []
 
-    # Analyze each community
+    # Phase C — pre-filter communities: drop trivials, keep top-N by size
+    eligible: list[tuple[str, set, list, list]] = []
     for cid, cdata in communities.items():
         members = set(cdata.get("members", []))
-        if len(members) < 2:
-            continue  # Skip singleton communities
-
-        # Get nodes and edges for this community
+        if len(members) < min_size:
+            continue
         community_nodes = [nodes_by_id[m] for m in members if m in nodes_by_id]
+        if not community_nodes:
+            continue
         community_edges = []
         community_edge_indices = []
-
         for i, link in enumerate(links):
             src = link.get("source", "")
             tgt = link.get("target", "")
             if src in members or tgt in members:
                 community_edges.append(link)
                 community_edge_indices.append(i)
+        eligible.append((str(cid), members, community_nodes, community_edges, community_edge_indices))
 
-        if not community_nodes:
-            continue
+    # Sort by community size desc, then keep top-N
+    eligible.sort(key=lambda t: len(t[2]), reverse=True)
+    if max_communities > 0:
+        eligible = eligible[:max_communities]
 
-        progress = {"phase": "semantic_analysis", "community": cid, "total": len(communities)}
-        print(json.dumps({"progress": progress}), file=sys.stderr, flush=True)
+    total_eligible = len(eligible)
+    print(
+        f"[semantic] {total_eligible} communities to analyze "
+        f"(min_size={min_size}, max={max_communities or 'unlimited'}, parallelism={parallelism})",
+        file=sys.stderr,
+    )
 
-        result = analyze_community_coherence(community_nodes, community_edges, cid)
-        stats["communities_analyzed"] += 1
-        stats["notes"][cid] = result.get("notes", "")
+    if total_eligible == 0:
+        return stats
 
-        # Mark incoherent edges for removal
-        for edge_idx in result.get("incoherent_edges", []):
-            if 0 <= edge_idx < len(community_edge_indices):
-                edges_to_remove.add(community_edge_indices[edge_idx])
-                stats["edges_removed"] += 1
+    # Phase B — analyze in parallel via ThreadPoolExecutor
+    completed_count = 0
 
-        # Collect new semantic edges
-        for new_edge in result.get("new_edges", []):
-            src = new_edge.get("source", "")
-            tgt = new_edge.get("target", "")
-            # Only add if both nodes actually exist
-            if src in nodes_by_id and tgt in nodes_by_id:
-                new_links.append({
-                    "source": src,
-                    "target": tgt,
-                    "relation": new_edge.get("relation", "semantically_related"),
-                    "confidence": "INFERRED",
-                    "confidence_score": 0.7,
-                    "weight": 1.0,
-                    "source_file": "",
-                    "description": new_edge.get("description", ""),
-                })
-                stats["edges_added"] += 1
+    def _work(item):
+        cid, _members, c_nodes, c_edges, c_edge_indices = item
+        return cid, c_edge_indices, analyze_community_coherence(c_nodes, c_edges, cid)
+
+    with ThreadPoolExecutor(max_workers=parallelism) as executor:
+        futures = {executor.submit(_work, item): item for item in eligible}
+        for fut in as_completed(futures):
+            try:
+                cid, c_edge_indices, result = fut.result()
+            except Exception as e:
+                print(f"[semantic] worker exception: {e}", file=sys.stderr)
+                continue
+
+            completed_count += 1
+            progress = {
+                "phase": "semantic_analysis",
+                "community": str(completed_count),
+                "total": total_eligible,
+            }
+            print(json.dumps({"progress": progress}), file=sys.stderr, flush=True)
+
+            stats["communities_analyzed"] += 1
+            stats["notes"][cid] = result.get("notes", "")
+
+            for edge_idx in result.get("incoherent_edges", []):
+                if 0 <= edge_idx < len(c_edge_indices):
+                    edges_to_remove.add(c_edge_indices[edge_idx])
+                    stats["edges_removed"] += 1
+
+            for new_edge in result.get("new_edges", []):
+                src = new_edge.get("source", "")
+                tgt = new_edge.get("target", "")
+                if src in nodes_by_id and tgt in nodes_by_id:
+                    new_links.append({
+                        "source": src,
+                        "target": tgt,
+                        "relation": new_edge.get("relation", "semantically_related"),
+                        "confidence": "INFERRED",
+                        "confidence_score": 0.7,
+                        "weight": 1.0,
+                        "source_file": "",
+                        "description": new_edge.get("description", ""),
+                    })
+                    stats["edges_added"] += 1
 
     # Apply changes to graph
     if edges_to_remove or new_links:

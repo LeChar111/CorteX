@@ -7,9 +7,10 @@ export class CortexClient {
     this.apiKey = apiKey;
   }
 
-  private async request(path: string, options: RequestInit = {}): Promise<Response> {
+  private async request(path: string, options: RequestInit = {}, timeoutMs = 10000): Promise<Response> {
     const res = await fetch(`${this.baseUrl}${path}`, {
       ...options,
+      signal: AbortSignal.timeout(timeoutMs),
       headers: {
         'Content-Type': 'application/json',
         'X-API-Key': this.apiKey,

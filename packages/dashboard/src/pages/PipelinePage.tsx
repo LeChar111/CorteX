@@ -369,6 +369,7 @@ function ScanPipelineView() {
                   const totalFiles = st.totalFiles as number | undefined;
                   const totalDocs = st.totalDocuments as number | undefined;
                   const llmBatches = st.llmBatches as number | undefined;
+                  const llmBatchesDone = st.llmBatchesDone as number | undefined;
                   const colCount = 7 + (activeTab === 'completed' ? 1 : 0) + ((activeTab === 'completed' || activeTab === 'running') ? 1 : 0) + (activeTab === 'failed' ? 1 : 0) + 1;
                   return (
                   <React.Fragment key={job.id}>
@@ -439,7 +440,8 @@ function ScanPipelineView() {
                                 <span className="text-muted">Progress</span>
                                 <span className="font-mono text-text">
                                   {phase === 'parsing' && totalFiles ? `Parsing ${st.filesProcessed}/${totalFiles} files` :
-                                   phase === 'llm_extraction' ? `LLM extraction (${llmBatches ?? '?'} batches)` :
+                                   phase === 'llm_extraction' && llmBatches ? `LLM extraction (${llmBatchesDone ?? 0}/${llmBatches} batches)` :
+                                   phase === 'llm_extraction' ? 'LLM extraction (?)' :
                                    phase === 'ingestion' && totalDocs ? `Ingesting ${st.documentsIngested}/${totalDocs} docs` :
                                    'Starting...'}
                                 </span>
@@ -447,6 +449,7 @@ function ScanPipelineView() {
                               <div className="h-2 rounded-full bg-hover overflow-hidden">
                                 <div className="h-full rounded-full bg-accent transition-all duration-500" style={{
                                   width: phase === 'parsing' && totalFiles ? `${Math.round(((st.filesProcessed as number) / totalFiles) * 33)}%`
+                                    : phase === 'llm_extraction' && llmBatches ? `${33 + Math.round(((llmBatchesDone ?? 0) / llmBatches) * 33)}%`
                                     : phase === 'llm_extraction' ? '50%'
                                     : phase === 'ingestion' && totalDocs ? `${66 + Math.round(((st.documentsIngested as number) / totalDocs) * 34)}%`
                                     : '10%'

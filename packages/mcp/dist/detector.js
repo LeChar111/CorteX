@@ -38,6 +38,7 @@ async function detectProjectUncached(cwd, apiBaseUrl, apiKey) {
         // 2. Get all projects and repos from API in one pass
         const projectsRes = await fetch(`${apiBaseUrl}/api/projects`, {
             headers: { 'X-API-Key': apiKey },
+            signal: AbortSignal.timeout(5000),
         });
         if (!projectsRes.ok)
             return null;
@@ -46,6 +47,7 @@ async function detectProjectUncached(cwd, apiBaseUrl, apiKey) {
         const reposByProject = await Promise.all(projects.map(async (project) => {
             const reposRes = await fetch(`${apiBaseUrl}/api/repos?projectId=${project.id}`, {
                 headers: { 'X-API-Key': apiKey },
+                signal: AbortSignal.timeout(5000),
             });
             if (!reposRes.ok)
                 return { project, repos: [] };

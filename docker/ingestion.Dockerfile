@@ -20,7 +20,7 @@ COPY package.json pnpm-lock.yaml pnpm-workspace.yaml tsconfig.base.json ./
 COPY packages/ingestion/package.json packages/ingestion/
 COPY packages/db/package.json packages/db/
 COPY packages/shared/package.json packages/shared/
-RUN corepack enable && pnpm install --frozen-lockfile
+RUN corepack enable && pnpm install --prefer-frozen-lockfile
 
 # Copy source and build
 COPY packages/shared/ packages/shared/

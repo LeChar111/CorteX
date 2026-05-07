@@ -8,7 +8,15 @@ export const webhookRoutes = new Hono();
 let scanQueue: Queue | null = null;
 function getQueue(): Queue {
   if (!scanQueue) {
-    scanQueue = new Queue('cortex-scan', { connection: getRedis() });
+    scanQueue = new Queue('cortex-scan', {
+      connection: getRedis(),
+      defaultJobOptions: {
+        attempts: Number(process.env['CORTEX_SCAN_ATTEMPTS'] ?? 2),
+        backoff: { type: 'exponential', delay: 5000 },
+        removeOnComplete: { age: 86400, count: 1000 },
+        removeOnFail: { age: 7 * 86400 },
+      },
+    });
   }
   return scanQueue;
 }

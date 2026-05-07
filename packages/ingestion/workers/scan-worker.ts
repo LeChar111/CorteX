@@ -99,7 +99,15 @@ export function createScanWorker(redisUrl: string) {
         throw err;
       }
     },
-    { connection, concurrency: 1 },
+    {
+      connection,
+      // Allow N scans to run concurrently. Each scan spawns its own
+      // graphify Python subprocess (CPU-bound during AST extraction)
+      // and parallel Claude CLI calls during semantic analysis. With
+      // concurrency=3 we keep host CPU busy without thrashing.
+      // Override via CORTEX_SCAN_CONCURRENCY env var.
+      concurrency: Number(process.env['CORTEX_SCAN_CONCURRENCY'] ?? 3),
+    },
   );
 
   worker.on('completed', (job) => {

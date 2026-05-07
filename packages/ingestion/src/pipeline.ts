@@ -70,7 +70,10 @@ function runGraphifyBridge(args: {
     });
 
     let stdout = '';
-    let stderr = '';
+    // Keep only non-progress stderr lines for error messages so the failure
+    // payload doesn't get drowned in hundreds of "{progress: ...}" entries.
+    const stderrTail: string[] = [];
+    const STDERR_TAIL_MAX = 30;
 
     proc.stdout.on('data', (data: Buffer) => {
       stdout += data.toString();
@@ -78,20 +81,29 @@ function runGraphifyBridge(args: {
 
     proc.stderr.on('data', (data: Buffer) => {
       const line = data.toString().trim();
-      stderr += line + '\n';
       try {
         const parsed = JSON.parse(line);
         if (parsed.progress && args.onProgress) {
           args.onProgress(parsed.progress);
+          return;
         }
       } catch {
-        if (line) console.log(`[graphify] ${line}`);
+        // not JSON — fall through
+      }
+      if (line) {
+        console.log(`[graphify] ${line}`);
+        stderrTail.push(line);
+        if (stderrTail.length > STDERR_TAIL_MAX) stderrTail.shift();
       }
     });
 
-    proc.on('close', (code) => {
-      if (code !== 0) {
-        reject(new Error(`graphify bridge exited with code ${code}: ${stderr}`));
+    proc.on('close', (code, signal) => {
+      if (code !== 0 || signal) {
+        const reason = signal
+          ? `killed by signal ${signal}`
+          : `exited with code ${code}`;
+        const tail = stderrTail.join('\n').slice(-1500);
+        reject(new Error(`graphify bridge ${reason}${tail ? `: ${tail}` : ''}`));
         return;
       }
       try {
@@ -164,7 +176,8 @@ export async function scanRepo(options: ScanOptions): Promise<ScanResult> {
       repoName,
       onProgress: async (progress) => {
         // Map graphify phases to dashboard-expected phases
-        const gPhase = (progress as Record<string, unknown>).phase as string;
+        const p = progress as Record<string, unknown>;
+        const gPhase = p.phase as string;
         let dashPhase = 'parsing';
         if (gPhase === 'enrichment' || gPhase === 'semantic_analysis' || gPhase === 'final_cluster') {
           dashPhase = 'llm_extraction';
@@ -172,21 +185,50 @@ export async function scanRepo(options: ScanOptions): Promise<ScanResult> {
           dashPhase = 'ingestion';
         }
 
-        const totalFiles = (progress as Record<string, unknown>).files as number ?? (progress as Record<string, unknown>).total as number ?? 0;
-        const nodesCount = (progress as Record<string, unknown>).nodes as number ?? result.nodesExtracted;
-        const edgesCount = (progress as Record<string, unknown>).edges as number ?? result.edgesExtracted;
+        // During AST/build/enrichment phases, p has files/nodes/edges from
+        // graphify. Take the latest values (edges may DECREASE after dedup
+        // between extract → build, so don't apply a high-water mark to
+        // anything except filesProcessed).
+        // During semantic_analysis, p.total is the LLM batch count, NOT files,
+        // so we don't touch filesProcessed/nodes/edges from it.
+        const isParsingPhase =
+          gPhase === 'extract' || gPhase === 'build' || gPhase === 'enrichment';
+
+        if (isParsingPhase) {
+          if (typeof p.files === 'number' && p.files > result.filesProcessed) {
+            result.filesProcessed = p.files;
+          }
+          if (typeof p.nodes === 'number') result.nodesExtracted = p.nodes;
+          if (typeof p.edges === 'number') result.edgesExtracted = p.edges;
+        }
+
+        // Build stats payload — semantic phase exposes llm batch progress
+        const stats: Record<string, unknown> = {
+          ...result,
+          phase: dashPhase,
+          totalFiles: result.filesProcessed,
+          filesProcessed: result.filesProcessed,
+          entitiesExtracted: result.nodesExtracted + result.edgesExtracted,
+        };
+
+        if (dashPhase === 'llm_extraction') {
+          // p.total = number of LLM batches/communities being processed
+          // p.community = how many have completed so far (string or number)
+          const llmTotal = Number(p.total ?? 0) || 0;
+          const llmDone = Number(p.community ?? 0) || 0;
+          stats.llmBatches = llmTotal;
+          stats.llmBatchesDone = llmDone;
+          stats.chunksProcessed = llmDone;
+          stats.total = llmTotal;
+        } else if (dashPhase === 'parsing') {
+          stats.total = result.filesProcessed;
+          stats.chunksProcessed = 0;
+        } else {
+          stats.total = result.filesProcessed;
+        }
 
         await updateScanJob(db, scanJobId, {
-          stats: {
-            ...result,
-            ...progress,
-            phase: dashPhase,
-            total: totalFiles,
-            filesProcessed: totalFiles,
-            entitiesExtracted: nodesCount + edgesCount,
-            chunksProcessed: (progress as Record<string, unknown>).community as number ?? 0,
-            documentsIngested: 0,
-          } as unknown as Record<string, unknown>,
+          stats: stats as Record<string, unknown>,
         }).catch(() => {});
       },
     }) as {

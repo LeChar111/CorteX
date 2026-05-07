@@ -105,9 +105,14 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
 // Start
 async function main() {
-  // Health check: verify Cortex API is reachable
+  // Health check with 3s timeout — avoids hanging if API accepts TCP but doesn't respond (e.g. DB down)
   try {
-    await client.health();
+    await Promise.race([
+      client.health(),
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error('timeout')), 3000),
+      ),
+    ]);
     console.error('Cortex API connected at', apiUrl);
   } catch {
     console.error(`Warning: Cortex API at ${apiUrl} is not reachable. Tools will fail until the API is running.`);
